@@ -76,6 +76,19 @@ internal sealed partial class MainWindow
         general.Children.Add(archiveClipboard);
         var clipboardHelp = Ui.Label("켜둔 동안 복사한 텍스트·이미지·파일 목록을 그대로 기록합니다(비밀번호 포함).", 12, Ui.Muted);
         clipboardHelp.Margin = new Thickness(26, 0, 0, 0); clipboardHelp.LineHeight = 19; general.Children.Add(clipboardHelp);
+        // Automatic cleanup is off unless chosen; the choices keep any value an edited settings file may hold.
+        var retentionDays = new[] { 0, 7, 30, 90, 180, 365, settings.HistoryRetentionDays }.Distinct().Order().ToArray();
+        var retentionDayChoice = Ui.Choice(retentionDays.Select(days => days == 0 ? "끄기" : days == 365 ? "1년" : days + "일").ToArray(), Array.IndexOf(retentionDays, settings.HistoryRetentionDays));
+        retentionDayChoice.Width = 110; retentionDayChoice.HorizontalAlignment = HorizontalAlignment.Left;
+        var retentionCounts = new[] { 0, 100, 300, 1000, 3000, settings.HistoryRetentionCount }.Distinct().Order().ToArray();
+        var retentionCountChoice = Ui.Choice(retentionCounts.Select(count => count == 0 ? "없음" : $"{count:N0}개").ToArray(), Array.IndexOf(retentionCounts, settings.HistoryRetentionCount));
+        retentionCountChoice.Width = 110; retentionCountChoice.HorizontalAlignment = HorizontalAlignment.Left;
+        var retentionDayRow = Row("오래된 기록 삭제", retentionDayChoice); retentionDayRow.Margin = new Thickness(0, 12, 0, 10);
+        general.Children.Add(retentionDayRow);
+        var retentionCountRow = Row("기록 개수 상한", retentionCountChoice); retentionCountRow.Margin = new Thickness(0, 0, 0, 6);
+        general.Children.Add(retentionCountRow);
+        var retentionHelp = Ui.Label("기간이 지났거나 개수를 넘은 캡처·복사 기록을 앱이 관리하는 이미지와 함께 자동으로 삭제합니다. 직접 저장한 파일은 유지됩니다.", 12, Ui.Muted);
+        retentionHelp.LineHeight = 19; general.Children.Add(retentionHelp);
         var cleanup = Ui.Button("남은 기록 이미지 정리…", () =>
         {
             var orphans = history.OrphanImages().Count + clipboardHistory.OrphanImages().Count;
@@ -219,6 +232,17 @@ internal sealed partial class MainWindow
                 if (answer == MessageBoxResult.Cancel) { keep.Focus(); return; }
                 deleteImages = answer == MessageBoxResult.Yes;
             }
+            var chosenDays = retentionDays[Math.Max(0, retentionDayChoice.SelectedIndex)];
+            var chosenCount = retentionCounts[Math.Max(0, retentionCountChoice.SelectedIndex)];
+            if (chosenDays != settings.HistoryRetentionDays || chosenCount != settings.HistoryRetentionCount)
+            {
+                // The one confirmation for automatic deletion happens here, when the rule is chosen.
+                var expiring = HistoryStore.Expired(history.Entries.Concat(clipboardHistory.Entries), chosenDays, chosenCount, DateTimeOffset.Now, currentHistoryId).Count;
+                if (expiring > 0 && MessageBox.Show(dialog, $"지금 기준으로 기록 {expiring:N0}개가 삭제되고, 앞으로도 조건을 넘는 기록은 자동으로 삭제됩니다.\n기록 이미지도 함께 삭제합니다. 직접 저장한 파일은 유지됩니다.\n계속할까요?",
+                        "기록 자동 정리", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+                { retentionDayChoice.Focus(); return; }
+            }
+            candidate.HistoryRetentionDays = chosenDays; candidate.HistoryRetentionCount = chosenCount;
             candidate.CloseToTray = trayCheck.IsChecked == true;
             candidate.KeepHistory = keep.IsChecked == true;
             candidate.KeepCaptureImages = keepImages.IsChecked == true;
@@ -267,6 +291,7 @@ internal sealed partial class MainWindow
                 Motion.ReduceMotion = candidate.ReduceMotion;
                 Notify("설정을 저장했습니다.");
                 dialog.DialogResult = true;
+                ScheduleHistoryTrim(announce: true);
             }
             catch (Exception ex)
             {
@@ -309,6 +334,7 @@ internal sealed partial class MainWindow
         target.ArchiveClipboard = source.ArchiveClipboard;
         target.ReduceMotion = source.ReduceMotion; target.IncludeCursor = source.IncludeCursor;
         target.DelaySeconds = source.DelaySeconds; target.AfterCapture = source.AfterCapture; target.DetectSensitive = source.DetectSensitive; target.ReadCodes = source.ReadCodes;
+        target.HistoryRetentionDays = source.HistoryRetentionDays; target.HistoryRetentionCount = source.HistoryRetentionCount;
         target.SaveFolder = source.SaveFolder; target.JpegQuality = source.JpegQuality; target.MaxHistory = source.MaxHistory;
         target.RegionHotkey = source.RegionHotkey; target.WindowHotkey = source.WindowHotkey;
         target.ScrollHotkey = source.ScrollHotkey; target.HotkeyModifiers = source.HotkeyModifiers;

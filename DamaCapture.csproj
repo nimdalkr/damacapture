@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- The Windows 10 SDK target exposes the built-in Windows.Media.Ocr engine; no package is added. -->
@@ -12,7 +12,7 @@
     <RootNamespace>DamaCapture</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\dama.ico</ApplicationIcon>
-    <Version>0.9.6</Version>
+    <Version>0.9.7</Version>
     <Product>담아</Product>
     <Description>화면 캡처 · 이미지 편집기</Description>
     <Company>FOT</Company>

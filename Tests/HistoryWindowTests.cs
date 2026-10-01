@@ -225,6 +225,28 @@ public static class HistoryWindowTests
             Invoke("SetHistorySelecting", false);
             Invoke("SetHistoryKind", "all");
 
+            // Automatic cleanup deletes only records past the chosen age, through the same path, and never the one being edited.
+            var stale = history.RecordCapture(DateTimeOffset.Now.AddDays(-40), "오래된 창", "예시 앱", "Region", 8, 8);
+            var staler = history.RecordCapture(DateTimeOffset.Now.AddDays(-90), "더 오래된 창", "예시 앱", "Region", 8, 8);
+            var retentionDays = settings.HistoryRetentionDays; var retentionCount = settings.HistoryRetentionCount;
+            try
+            {
+                settings.HistoryRetentionDays = 30;
+                System.Threading.Tasks.Task<int>? trimming = null;
+                window.Dispatcher.BeginInvoke(() => trimming = (System.Threading.Tasks.Task<int>)typeof(MainWindow).GetMethod("TrimHistoryAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, [false])!);
+                PumpUntil(() => trimming is { IsCompleted: true } && window.IsEnabled);
+                Assert(trimming is { IsCompleted: true } && trimming.Result == 2 && history.Find(stale.Id) == null && history.Find(staler.Id) == null
+                    && history.Find(first.Id) != null && clipboardHistory.Find(textEntry.Id) != null, "Age-based cleanup removed the wrong records.");
+                // A count of one keeps the newest record; the one being edited is older but protected.
+                settings.HistoryRetentionDays = 0; settings.HistoryRetentionCount = 1;
+                trimming = null;
+                window.Dispatcher.BeginInvoke(() => trimming = (System.Threading.Tasks.Task<int>)typeof(MainWindow).GetMethod("TrimHistoryAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, [false])!);
+                PumpUntil(() => trimming is { IsCompleted: true } && window.IsEnabled);
+                Assert(trimming is { IsCompleted: true } && trimming.Result == 0 && history.Find(first.Id) != null && Field<Guid?>("currentHistoryId") == first.Id,
+                    "Count-based cleanup deleted the record being edited.");
+            }
+            finally { settings.HistoryRetentionDays = retentionDays; settings.HistoryRetentionCount = retentionCount; }
+
             // The first close is canceled while history flushes. Exit must be dispatched only
             // after this Closing event has returned; calling Show during Closing used to throw.
             window.Close();
@@ -240,7 +262,8 @@ public static class HistoryWindowTests
             Assert(exceptions.Count == 0, Describe(exceptions));
             Assert(drained, "The closed editor still had unfinished dispatcher work after five seconds.");
             return ["편집 흐름: 자동 보관 상태·편집 복원·캡처/복사 기록 필터와 본문 검색·읽기 전용 미리보기·캡처 정책과 독립된 복사 이미지 편집 저장·숨기기 후 보관 유지 통과",
-                "기록 선택 삭제: 필터 기준 모두 선택·필터 변경 시 선택 정리·선택한 기록과 관리 이미지만 삭제 통과","창 종료: 실제 클립보드 접근 없는 격리된 예시 기록·두 이미지 저장 큐 처리 후 WPF 창 종료, 이중 Closing 완료·Dispatcher 예외 없음 통과"];
+                "기록 선택 삭제: 필터 기준 모두 선택·필터 변경 시 선택 정리·선택한 기록과 관리 이미지만 삭제 통과",
+                "기록 자동 정리: 기간 지난 기록만 삭제, 개수 상한에서 편집 중 기록 보호 통과", "창 종료: 실제 클립보드 접근 없는 격리된 예시 기록·두 이미지 저장 큐 처리 후 WPF 창 종료, 이중 Closing 완료·Dispatcher 예외 없음 통과"];
         }
         finally
         {

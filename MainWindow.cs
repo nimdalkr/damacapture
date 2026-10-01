@@ -93,6 +93,7 @@ internal sealed partial class MainWindow : Window
         {
             var dark = 0; DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref dark, 4);
             if (!demo) { SetupTray(); RegisterHotkeys(); ApplyClipboardSetting(); }
+            ScheduleHistoryTrim(announce: true);
             if (demo) { if (clipboardDemo) AddClipboardDemoEntries(); SetImage(ImageFactory.Sample()); RecordCaptureHistory(new CaptureContext(DateTimeOffset.Now, "디자인 검토 · 예시 창", "예시 앱", "Region")); ShowPage("editor", true); Notify("예시 이미지"); }
         };
         Closing += OnClosing;

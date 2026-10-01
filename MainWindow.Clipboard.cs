@@ -73,6 +73,7 @@ internal sealed partial class MainWindow
                 capture.Image?.PixelWidth ?? 0, capture.Image?.PixelHeight ?? 0);
             if (capture.Image != null) clipboardWriter.Enqueue(entry.Id, capture.Image);
             RefreshHistoryIfVisible();
+            ScheduleHistoryTrim();
             if (clipboardHistory.LastError != null) Notify("복사 기록을 저장하지 못했습니다. 이번 실행 동안은 유지됩니다.");
         }
         catch (Exception ex) { Notify("복사 기록을 남기지 못했습니다. " + ex.Message); }

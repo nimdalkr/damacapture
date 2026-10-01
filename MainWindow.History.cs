@@ -60,6 +60,28 @@ internal sealed partial class MainWindow
         RememberCurrentDocument();
         PreserveHistoryImage();
         if (history.LastError != null) Notify("기록을 저장하지 못했습니다. 이번 실행 동안은 유지됩니다.");
+        ScheduleHistoryTrim();
+    }
+
+    /// <summary>Runs the automatic cleanup once the current work has settled, so a capture never waits for it.</summary>
+    private void ScheduleHistoryTrim(bool announce = false)
+    {
+        if (settings.HistoryRetentionDays <= 0 && settings.HistoryRetentionCount <= 0) return;
+        Dispatcher.BeginInvoke(() => _ = TrimHistoryAsync(announce), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+
+    /// <summary>
+    /// Deletes records past the retention the user chose, captures and copies together, through the same path as
+    /// a manual delete: only app-managed PNGs and records go, never exported files. The record being edited stays.
+    /// </summary>
+    private async Task<int> TrimHistoryAsync(bool announce)
+    {
+        if (removingHistory || closingHistory || exiting) return 0;
+        var expired = HistoryStore.Expired(history.Entries.Concat(clipboardHistory.Entries), settings.HistoryRetentionDays, settings.HistoryRetentionCount, DateTimeOffset.Now, currentHistoryId);
+        if (expired.Count == 0) return 0;
+        var deleted = await DeleteHistoryEntriesAsync(expired);
+        if (deleted > 0 && announce) Notify($"오래된 기록 {deleted:N0}개를 정리했습니다.");
+        return deleted;
     }
 
     private void ScheduleHistoryImage()

@@ -101,6 +101,29 @@ public sealed class HistoryStore
     public string? LastError { get { lock (gate) return lastError; } }
     internal void ReportBackgroundError(Exception exception) { lock (gate) lastError = exception.Message; }
 
+    /// <summary>When a record happened: the capture or copy time, else when it was saved.</summary>
+    public static DateTimeOffset EntryTime(HistoryEntry entry) => entry.CapturedAt ?? new DateTimeOffset(DateTime.SpecifyKind(entry.SavedAt, entry.SavedAt.Kind == DateTimeKind.Unspecified ? DateTimeKind.Local : entry.SavedAt.Kind));
+
+    /// <summary>
+    /// Records that automatic cleanup would delete: older than <paramref name="days"/>, or beyond the newest
+    /// <paramref name="count"/>. Zero for either rule turns it off. The protected record (the one being edited)
+    /// is never returned, though it still occupies its place in the count.
+    /// </summary>
+    public static List<Guid> Expired(IEnumerable<HistoryEntry> entries, int days, int count, DateTimeOffset now, Guid? protect = null)
+    {
+        var expired = new List<Guid>();
+        if (days <= 0 && count <= 0) return expired;
+        var ordered = entries.OrderByDescending(EntryTime).ToList();
+        var cutoff = days > 0 ? now.AddDays(-days) : DateTimeOffset.MinValue;
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var entry = ordered[i];
+            if (entry.Id == protect) continue;
+            if ((days > 0 && EntryTime(entry) < cutoff) || (count > 0 && i >= count)) expired.Add(entry.Id);
+        }
+        return expired;
+    }
+
     public HistoryStore(bool persist = false, string? directory = null, int maxEntries = 100)
     {
         this.persist = persist;

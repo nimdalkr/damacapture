@@ -39,6 +39,26 @@ public static class ServiceTests
         Assert(settings.Load().JpegQuality == 92 && File.ReadAllText(settings.FilePath) == "{invalid-json", "Damaged settings should fall back without overwriting.");
         results.Add("설정: 기본값, 저장·재실행, 범위 검증, 손상 파일 복구 통과");
 
+        // Automatic cleanup: off by default, clamped, and the rule itself keeps the newest and the record being edited.
+        Assert(settings.Load().HistoryRetentionDays == 0 && settings.Load().HistoryRetentionCount == 0, "Automatic history cleanup must be off by default.");
+        settings.Save(new AppSettings { HistoryRetentionDays = 30, HistoryRetentionCount = -5 });
+        loaded = settings.Load();
+        Assert(loaded.HistoryRetentionDays == 30 && loaded.HistoryRetentionCount == 0, "Retention settings did not round-trip or clamp.");
+        var now = DateTimeOffset.Now;
+        HistoryEntry Aged(int daysAgo) => new("", default) { Id = Guid.NewGuid(), CapturedAt = now.AddDays(-daysAgo) };
+        var fresh = Aged(0); var tenDays = Aged(10); var fortyDays = Aged(40); var yearOld = Aged(400);
+        var all = new[] { tenDays, yearOld, fresh, fortyDays };
+        Assert(HistoryStore.Expired(all, 0, 0, now).Count == 0, "Both rules off must expire nothing.");
+        var byAge = HistoryStore.Expired(all, 30, 0, now);
+        Assert(byAge.Count == 2 && byAge.Contains(fortyDays.Id) && byAge.Contains(yearOld.Id), "The 30-day rule must expire exactly the two older records.");
+        var byCount = HistoryStore.Expired(all, 0, 2, now);
+        Assert(byCount.SequenceEqual(new[] { fortyDays.Id, yearOld.Id }), "The count rule must keep the two newest and expire the rest, oldest last.");
+        var protectedRun = HistoryStore.Expired(all, 30, 1, now, protect: yearOld.Id);
+        Assert(protectedRun.Count == 2 && !protectedRun.Contains(yearOld.Id) && !protectedRun.Contains(fresh.Id), "The record being edited must survive both rules while the newest stays.");
+        var saved = new HistoryEntry("", DateTime.Now.AddDays(-50)) { Id = Guid.NewGuid() };
+        Assert(HistoryStore.Expired(new[] { saved, fresh }, 30, 0, now).SequenceEqual(new[] { saved.Id }), "A record without a capture time must age by its saved time.");
+        results.Add("기록 자동 정리: 기본 끄기, 범위 검증, 기간·개수 규칙과 편집 중 기록 보호 통과");
+
         HistoryTests(directory, results);
 
         var first = Frame(160, 200, 0);
