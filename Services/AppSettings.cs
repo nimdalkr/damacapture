@@ -19,6 +19,7 @@ public sealed class AppSettings
     public int MaxHistory { get; set; } // Retained only for reading older settings; history has no count limit.
     public string AfterCapture { get; set; } = "editor";
     public bool DetectSensitive { get; set; } = true;
+    public bool ReadCodes { get; set; } = true;
     public uint RegionHotkey { get; set; } = 0x31;
     public uint WindowHotkey { get; set; } = 0x32;
     public uint ScrollHotkey { get; set; } = 0x33;
@@ -53,6 +54,7 @@ public sealed class AppSettings
             MaxHistory = 0,
             AfterCapture = settings.AfterCapture is "editor" or "copy" or "save" ? settings.AfterCapture : "editor",
             DetectSensitive = settings.DetectSensitive,
+            ReadCodes = settings.ReadCodes,
             RegionHotkey = ValidKey(settings.RegionHotkey) ? settings.RegionHotkey : 0x31,
             WindowHotkey = ValidKey(settings.WindowHotkey) ? settings.WindowHotkey : 0x32,
             ScrollHotkey = ValidKey(settings.ScrollHotkey) ? settings.ScrollHotkey : 0x33,

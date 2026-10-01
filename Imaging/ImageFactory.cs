@@ -31,10 +31,29 @@ public static class ImageFactory
             Label(drawing, "모자이크를 선택하고 이름이나 이메일 위를 드래그하면 바로 적용됩니다.", 48, 518, 17, Brushes.DimGray);
             drawing.DrawLine(rule, new Point(46, 596), new Point(1034, 596));
             Label(drawing, "예시 이미지 · 가상 데이터", 48, 618, 13, Brushes.DimGray);
+            // A code in the memo area, so the demo shows the link bubble.
+            DrawCode(drawing, SampleLink, new Point(860, 418), 5);
+            Label(drawing, "예시 QR", 866, 572, 13, Brushes.DimGray);
         }
         var result = new RenderTargetBitmap(1080, 680, 96, 96, PixelFormats.Pbgra32);
         result.Render(visual);
         return ImageDocument.Normalize(result);
+    }
+
+    public const string SampleLink = "https://example.com/menu";
+
+    /// <summary>Draws a QR code for <paramref name="text"/> with its top-left corner at <paramref name="origin"/> and returns the area it covers.</summary>
+    public static Rect DrawCode(DrawingContext drawing, string text, Point origin, double modulePixels, Brush? ink = null, Brush? paper = null)
+    {
+        var matrix = new ZXing.QrCode.QRCodeWriter().encode(text, ZXing.BarcodeFormat.QR_CODE, 0, 0, new System.Collections.Generic.Dictionary<ZXing.EncodeHintType, object> { [ZXing.EncodeHintType.MARGIN] = 0 });
+        var quiet = modulePixels * 4;
+        var area = new Rect(origin.X - quiet, origin.Y - quiet, matrix.Width * modulePixels + quiet * 2, matrix.Height * modulePixels + quiet * 2);
+        drawing.DrawRectangle(paper ?? Brushes.White, null, area);
+        ink ??= Brushes.Black;
+        for (var y = 0; y < matrix.Height; y++)
+            for (var x = 0; x < matrix.Width; x++)
+                if (matrix[x, y]) drawing.DrawRectangle(ink, null, new Rect(origin.X + x * modulePixels, origin.Y + y * modulePixels, modulePixels, modulePixels));
+        return new Rect(origin.X, origin.Y, matrix.Width * modulePixels, matrix.Height * modulePixels);
     }
 
     private static void Label(DrawingContext drawing, string text, double x, double y, double size, Brush brush, bool bold = false)

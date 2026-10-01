@@ -352,8 +352,8 @@ internal sealed partial class MainWindow
         canvasHost = canvasBorder;
         canvasScroll = new ScrollViewer { Content = canvasBorder, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Background = Ui.Canvas };
         canvasScroll.SizeChanged += (_, _) => { if (currentPage == "editor" && fitView) Fit(); }; body.Children.Add(canvasScroll);
-        // Overlays on the canvas area: the detection decision card at the top, transient feedback at the bottom.
-        body.Children.Add(BuildSensitiveCard()); body.Children.Add(BuildToastHost());
+        // Overlays on the canvas area: QR bubbles beside their codes, the detection decision card at the top, transient feedback at the bottom.
+        body.Children.Add(BuildCodeLayer()); body.Children.Add(BuildSensitiveCard()); body.Children.Add(BuildToastHost());
         canvasScroll.PreviewMouseWheel += (_, e) =>
         {
             if (document == null || Keyboard.Modifiers != ModifierKeys.Control) return;

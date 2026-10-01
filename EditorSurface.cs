@@ -27,6 +27,9 @@ internal sealed class EditorSurface : FrameworkElement
     private IReadOnlyList<(Rect Bounds, string Label)> hints = [];
     /// <summary>Suggested areas drawn over the image until the user masks or dismisses them.</summary>
     public IReadOnlyList<(Rect Bounds, string Label)> Hints { get => hints; set { hints = value ?? []; DrawHints(); } }
+    private IReadOnlyList<Rect> marks = [];
+    /// <summary>Areas a bubble points at, outlined in ink rather than red: they are information, not a warning.</summary>
+    public IReadOnlyList<Rect> Marks { get => marks; set { marks = value ?? []; DrawHints(); } }
     // Rendering is layered so that only what moves is redrawn: the image and committed edits are drawn in
     // OnRender, while the drag preview, detection hints and scan line each live in their own visual.
     // This keeps software rendering cheap even for large captures.
@@ -87,10 +90,13 @@ internal sealed class EditorSurface : FrameworkElement
     private void DrawHints()
     {
         using var dc = hintLayer.RenderOpen();
-        if (hints.Count == 0 || Document == null) return;
+        if ((hints.Count == 0 && marks.Count == 0) || Document == null) return;
         var scale = ViewScale;
         var thickness = 1.5 / scale;
         var reveal = Math.Clamp(HintReveal, 0, 1);
+        if (reveal > 0)
+            foreach (var mark in marks)
+                dc.DrawGeometry(null, new Pen(Ui.Primary, thickness) { DashStyle = HintDashes(reveal, 2 * (mark.Width + mark.Height) / thickness) }, Outline(mark));
         var typeface = new Typeface(new FontFamily("Segoe UI, Malgun Gothic"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
         foreach (var (bounds, label) in hints)
         {

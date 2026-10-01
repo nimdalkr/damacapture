@@ -148,6 +148,10 @@ public static class CaptureTests
         Assert(missing.WindowTitle == "제목 없는 창" && missing.ApplicationName == "알 수 없는 앱" &&
             missing.CapturedAt == context.CapturedAt && missing.Mode == nameof(CaptureMode.Region),
             "Missing foreground information did not keep a usable context.");
+        // The app hides its own window without handing activation on, so a hidden foreground must give way to the next visible window.
+        var next = CaptureContext.NextVisible(fixture.Handle);
+        Assert(next != fixture.Handle && (next == IntPtr.Zero || (NativeMethods.IsWindowVisible(next) && NativeMethods.GetWindowTextLength(next) > 0)),
+            "The window after the fixture in Z-order must be a visible, titled window.");
 
         // Close only the capture service's own selection window; this exercises the real cancellation branch.
         var overlaySeen = false;

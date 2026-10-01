@@ -106,6 +106,9 @@ internal sealed partial class MainWindow
         captureTab.Children.Add(Row("캡처 후 동작", after));
         var detect = Check("민감 정보 감지", settings.DetectSensitive);
         captureTab.Children.Add(detect);
+        var codesCheck = Check("QR 코드 읽기", settings.ReadCodes);
+        codesCheck.Margin = new Thickness(0, 10, 0, 0);
+        captureTab.Children.Add(codesCheck);
 
         var saveTab = AddTab("저장");
         var folderLabel = Ui.Label("저장 폴더 *필수", 12); folderLabel.Margin = new Thickness(0, 0, 0, 8); saveTab.Children.Add(folderLabel);
@@ -169,6 +172,7 @@ internal sealed partial class MainWindow
         aboutTab.Children.Add(Row("Telegram", Link("@nimdal", "https://t.me/nimdal")));
         aboutTab.Children.Add(Row("소스", Link("github.com/nimdalkr/damacapture", "https://github.com/nimdalkr/damacapture")));
         aboutTab.Children.Add(Row("라이선스", Ui.Label("GPL-3.0", 12)));
+        aboutTab.Children.Add(Row("QR 읽기", Ui.Label("ZXing.Net · Apache-2.0", 12)));
         if (openAbout) tabs.SelectedItem = tabs.Items[^1];
 
         var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
@@ -225,6 +229,7 @@ internal sealed partial class MainWindow
             candidate.DelaySeconds = delaySeconds;
             candidate.AfterCapture = afterValues[Math.Max(0, after.SelectedIndex)];
             candidate.DetectSensitive = detect.IsChecked == true;
+            candidate.ReadCodes = codesCheck.IsChecked == true;
             candidate.SaveFolder = fullFolder;
             candidate.JpegQuality = (int)quality.Value;
             candidate.RegionHotkey = r; candidate.WindowHotkey = w; candidate.ScrollHotkey = s; candidate.HotkeyModifiers = 6;
@@ -303,7 +308,7 @@ internal sealed partial class MainWindow
         target.KeepCaptureImages = source.KeepCaptureImages; target.HistoryVersion = source.HistoryVersion;
         target.ArchiveClipboard = source.ArchiveClipboard;
         target.ReduceMotion = source.ReduceMotion; target.IncludeCursor = source.IncludeCursor;
-        target.DelaySeconds = source.DelaySeconds; target.AfterCapture = source.AfterCapture; target.DetectSensitive = source.DetectSensitive;
+        target.DelaySeconds = source.DelaySeconds; target.AfterCapture = source.AfterCapture; target.DetectSensitive = source.DetectSensitive; target.ReadCodes = source.ReadCodes;
         target.SaveFolder = source.SaveFolder; target.JpegQuality = source.JpegQuality; target.MaxHistory = source.MaxHistory;
         target.RegionHotkey = source.RegionHotkey; target.WindowHotkey = source.WindowHotkey;
         target.ScrollHotkey = source.ScrollHotkey; target.HotkeyModifiers = source.HotkeyModifiers;

@@ -27,9 +27,9 @@ internal sealed partial class MainWindow
     {
         if (document == null || ReferenceEquals(scannedDocument, document)) return;
         scannedDocument = document;
-        ClearFindings();
+        ClearFindings(); ClearCodes();
         // Availability is decided by the helper, so this process never loads the recognizers.
-        if (!settings.DetectSensitive) return;
+        if (!settings.DetectSensitive && !settings.ReadCodes) return;
         var generation = ++scanGeneration;
         var target = document;
         BitmapSource composed = target.Render();
@@ -41,8 +41,8 @@ internal sealed partial class MainWindow
 
     private async Task ScanAsync(int generation, ImageDocument target, BitmapSource composed)
     {
-        IReadOnlyList<Finding> found;
-        try { found = await AnalysisHost.DetectAsync(composed); }
+        AnalysisHost.Analysis found;
+        try { found = await AnalysisHost.AnalyzeAsync(composed, settings.DetectSensitive, settings.ReadCodes); }
         catch (Exception) { return; }
         // Findings land after the sweep has passed, so outlines never appear ahead of the line.
         var wait = EditorSurface.SweepDuration + 60 - (int)(Environment.TickCount64 - scanStarted);
@@ -50,11 +50,15 @@ internal sealed partial class MainWindow
         await Dispatcher.InvokeAsync(() =>
         {
             // The user may have moved on to another image while the scan ran.
-            if (generation != scanGeneration || !ReferenceEquals(document, target) || found.Count == 0) return;
-            findings.Clear(); findings.AddRange(found);
-            surface.Hints = findings.Select(finding => (finding.Bounds, finding.Label)).ToArray();
-            surface.RevealHints();
-            UpdateSensitiveCard();
+            if (generation != scanGeneration || !ReferenceEquals(document, target)) return;
+            if (found.Findings.Count > 0)
+            {
+                findings.Clear(); findings.AddRange(found.Findings);
+                surface.Hints = findings.Select(finding => (finding.Bounds, finding.Label)).ToArray();
+                UpdateSensitiveCard();
+            }
+            ShowCodes(found.Codes);
+            if (found.Findings.Count > 0 || found.Codes.Count > 0) surface.RevealHints();
         });
     }
 

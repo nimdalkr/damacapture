@@ -12,11 +12,15 @@
     <RootNamespace>DamaCapture</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\dama.ico</ApplicationIcon>
-    <Version>0.9.5</Version>
+    <Version>0.9.6</Version>
     <Product>담아</Product>
     <Description>화면 캡처 · 이미지 편집기</Description>
     <Company>FOT</Company>
     <Copyright>Copyright (C) 2026 FOT</Copyright>  </PropertyGroup>
+  <ItemGroup>
+    <!-- QR decoding on this PC (Apache-2.0); the only package the app references. -->
+    <PackageReference Include="ZXing.Net" Version="0.16.11"/>
+  </ItemGroup>
   <ItemGroup>
     <Resource Include="Assets\dama.ico"/>
     <Compile Remove=".tools\**;Capture\bin\**;Capture\obj\**"/>

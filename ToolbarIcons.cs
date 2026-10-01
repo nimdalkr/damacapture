@@ -26,6 +26,7 @@ internal static class ToolbarIcons
         ["open"] = [new("M3,9 V5 H9 L11,7 H20 V10 M3,9 H21 L18,20 H3 Z")],
         ["save"] = [new("M4,3 H17 L21,7 V21 H3 V3 Z M7,3 V9 H16 V3 M7,21 V14 H17 V21 M13,5 V7")],
         ["copy"] = [new("M8,7 H21 V21 H8 Z M4,17 H3 V3 H16 V4")],
+        ["qrcode"] = [new("M4,4 H9 V9 H4 Z M15,4 H20 V9 H15 Z M4,15 H9 V20 H4 Z M6.5,6.5 H6.6 M17.5,6.5 H17.6 M6.5,17.5 H6.6 M12,4 V6 M12,9 V12 H15 M15,15 H17 V17 M20,13 V15 M20,18 V20 H17 M12,15 V20 H14")],
         ["paste"] = [new("M8,5 H4 V21 H20 V5 H16 M8,3 H16 V7 H8 Z M8,12 H16 M8,16 H14")],
         ["settings"] = [new("M9.5,3 H14.5 L15,6 L17,7 L20,6 L22,10 L19.5,12 L19.5,14 L21,16 L18.5,20 L15.5,19 L14,21 H10 L9,18.5 L7,18 L4,19 L2,15 L4.5,13 V11 L2,9 L4.5,5 L7.5,6 Z M15.5,12 A3.5,3.5 0 1 1 8.5,12 A3.5,3.5 0 1 1 15.5,12")],
         ["select"] = [new("M5,3 L19,13 L12.5,14.5 L10,21 Z")],

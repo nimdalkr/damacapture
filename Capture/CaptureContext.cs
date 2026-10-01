@@ -10,9 +10,35 @@ public sealed record CaptureContext(DateTimeOffset CapturedAt, string WindowTitl
 {
     internal static CaptureContext ReadForeground(CaptureMode mode)
     {
-        var window = NativeMethods.GetForegroundWindow();
+        var window = ForegroundForCapture();
         var capturedAt = DateTimeOffset.Now;
         return ReadWindow(window, capturedAt, mode);
+    }
+
+    /// <summary>
+    /// The foreground window, unless it is no longer visible (this app hides its own window for the capture
+    /// without handing activation on); then the next visible window in Z-order, which is the one Windows
+    /// would have activated.
+    /// </summary>
+    internal static IntPtr ForegroundForCapture()
+    {
+        var window = NativeMethods.GetForegroundWindow();
+        if (window == IntPtr.Zero || NativeMethods.IsWindowVisible(window)) return window;
+        return NextVisible(window);
+    }
+
+    internal static IntPtr NextVisible(IntPtr from)
+    {
+        var current = from;
+        for (var i = 0; i < 1024 && current != IntPtr.Zero; i++)
+        {
+            current = NativeMethods.GetWindow(current, NativeMethods.GW_HWNDNEXT);
+            if (current == IntPtr.Zero) break;
+            if (!NativeMethods.IsWindowVisible(current) || NativeMethods.GetWindowTextLength(current) == 0) continue;
+            if (NativeMethods.GetCloaked(current, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+            return current;
+        }
+        return IntPtr.Zero;
     }
 
     internal static CaptureContext ReadWindow(IntPtr window, DateTimeOffset capturedAt, CaptureMode mode)

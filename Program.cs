@@ -22,7 +22,7 @@ internal static class Program
             var report = Path.Combine(AppContext.BaseDirectory, "self-test-result.json");
             try
             {
-                var results = ImageEngineTests.Run().Concat(SessionDocumentTests.Run()).Concat(ServiceTests.Run()).Concat(HistoryWriterTests.Run()).Concat(CaptureTests.Run()).Concat(MotionTests.Run()).Concat(ClipboardMonitorTests.Run()).Concat(ClipboardHistoryTests.Run()).Concat(ClipboardFollowerTests.Run()).Concat(TextRecognitionTests.Run()).Concat(SensitiveDetectionTests.Run()).Concat(HistoryWindowTests.Run()).ToArray();
+                var results = ImageEngineTests.Run().Concat(SessionDocumentTests.Run()).Concat(ServiceTests.Run()).Concat(HistoryWriterTests.Run()).Concat(CaptureTests.Run()).Concat(MotionTests.Run()).Concat(ClipboardMonitorTests.Run()).Concat(ClipboardHistoryTests.Run()).Concat(ClipboardFollowerTests.Run()).Concat(TextRecognitionTests.Run()).Concat(SensitiveDetectionTests.Run()).Concat(CodeReaderTests.Run()).Concat(HistoryWindowTests.Run()).ToArray();
                 File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, tests = results }, new JsonSerializerOptions { WriteIndented = true }));
                 return 0;
             }

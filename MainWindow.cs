@@ -231,17 +231,26 @@ internal sealed partial class MainWindow : Window
         catch (Exception ex) { RestoreWindow(activate: true); Notify("캡처 실패: " + ex.Message); }
         finally { capturing = false; NativeMethods.SetWindowTransitions(new WindowInteropHelper(this).Handle, true); }
     }
-    // The window has to be off the screen before pixels are read. That takes a composed frame or two, not a
-    // fixed wait; a window already in the tray or minimized is not on the screen and needs no wait at all.
+    // The window has to be off the screen before pixels are read. That takes a composed frame or two plus a
+    // short settle so nothing of the window lingers; a window already in the tray or minimized is not on the
+    // screen and needs no wait at all, which keeps the hotkey path instant.
     private async Task HideForCaptureAsync()
     {
         var onScreen = IsVisible && WindowState != WindowState.Minimized;
-        NativeMethods.SetWindowTransitions(new WindowInteropHelper(this).Handle, false);
+        var handle = new WindowInteropHelper(this).Handle;
+        NativeMethods.SetWindowTransitions(handle, false);
+        // Hiding the active window normally hands activation to the next app synchronously, which stalls for as
+        // long as that app takes to answer (measured up to 1.5 s). Hide without activating anything; the
+        // selection overlay takes the foreground a moment later anyway.
+        if (onScreen && handle != IntPtr.Zero)
+            NativeMethods.SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, NativeMethods.SWP_HIDEWINDOW | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER);
         Hide();
         if (!onScreen) return;
         await Task.Yield();
         NativeMethods.WaitForComposition();
+        await Task.Delay(HideSettleMilliseconds);
     }
+    private const int HideSettleMilliseconds = 60;
     private async Task StartScroll()
     {
         if (removingHistory || closingHistory || capturing || OwnedWindows.Cast<Window>().Any(window => window.IsVisible)) return;

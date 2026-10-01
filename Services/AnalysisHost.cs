@@ -15,25 +15,34 @@ using System.Windows.Media.Imaging;
 namespace DamaCapture.Services;
 
 /// <summary>
-/// Runs Windows OCR and face detection in a short-lived copy of this app. Their recognizers hold 60–90 MB that
-/// would otherwise stay in the resident tray process for good, and their CPU work no longer competes with the
-/// editor. Pixels travel over the child's standard input; nothing is written to disk.
+/// Runs Windows OCR, face detection and QR decoding in a short-lived copy of this app. Their recognizers hold
+/// 60–90 MB that would otherwise stay in the resident tray process for good, and their CPU work no longer competes
+/// with the editor. Pixels travel over the child's standard input; nothing is written to disk.
 /// </summary>
 internal static class AnalysisHost
 {
     public const string Argument = "--analyze";
     private const int Magic = 0x414D4144, DetectRequest = 1, TextRequest = 2;
+    private const int SensitiveFlag = 1, CodesFlag = 2;
     private static readonly TimeSpan Limit = TimeSpan.FromSeconds(60);
     /// <summary>Whether the most recent request was answered by the helper rather than in this process.</summary>
     internal static bool LastAnsweredByHelper { get; private set; }
 
-    public static Task<IReadOnlyList<Finding>> DetectAsync(BitmapSource image) =>
-        RunAsync(DetectRequest, image, ReadFindings, () => SensitiveContentDetector.DetectAsync(image));
+    /// <summary>Everything one pass over an image turns up: what to mask, and codes worth a bubble.</summary>
+    public sealed record Analysis(IReadOnlyList<Finding> Findings, IReadOnlyList<CodeFinding> Codes);
+
+    public static async Task<IReadOnlyList<Finding>> DetectAsync(BitmapSource image) => (await AnalyzeAsync(image, sensitive: true, codes: false)).Findings;
+
+    public static Task<Analysis> AnalyzeAsync(BitmapSource image, bool sensitive, bool codes)
+    {
+        var flags = (sensitive ? SensitiveFlag : 0) | (codes ? CodesFlag : 0);
+        return RunAsync(DetectRequest, flags, image, ReadAnalysis, () => AnalyzeInProcessAsync(image, flags));
+    }
 
     public static Task<TextRecognition.Result> RecognizeAsync(BitmapSource image) =>
-        RunAsync(TextRequest, image, ReadText, () => TextRecognition.RecognizeAsync(image));
+        RunAsync(TextRequest, 0, image, ReadText, () => TextRecognition.RecognizeAsync(image));
 
-    private static async Task<T> RunAsync<T>(int request, BitmapSource image, Func<JsonElement, T> read, Func<Task<T>> inProcess)
+    private static async Task<T> RunAsync<T>(int request, int flags, BitmapSource image, Func<JsonElement, T> read, Func<Task<T>> inProcess)
     {
         LastAnsweredByHelper = false;
         var start = HelperStart();
@@ -44,7 +53,7 @@ internal static class AnalysisHost
             using var process = Process.Start(start) ?? throw new Win32Exception("분석 프로세스를 시작하지 못했습니다.");
             try { process.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception) { }
             var output = process.StandardOutput.ReadToEndAsync();
-            await Task.Run(() => { using var input = process.StandardInput.BaseStream; WriteRequest(input, request, image); });
+            await Task.Run(() => { using var input = process.StandardInput.BaseStream; WriteRequest(input, request, flags, image); });
             if (await Task.WhenAny(output, Task.Delay(Limit)) != output)
             {
                 try { process.Kill(); } catch (Exception) { }
@@ -85,12 +94,12 @@ internal static class AnalysisHost
         };
     }
 
-    private static void WriteRequest(Stream stream, int request, BitmapSource image)
+    private static void WriteRequest(Stream stream, int request, int flags, BitmapSource image)
     {
         var source = image.Format == PixelFormats.Bgra32 ? image : new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
         int width = source.PixelWidth, height = source.PixelHeight, stride = width * 4;
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-        writer.Write(Magic); writer.Write(request); writer.Write(width); writer.Write(height);
+        writer.Write(Magic); writer.Write(request); writer.Write(flags); writer.Write(width); writer.Write(height);
         // Row by row, so a large capture never needs a second full-size copy in this process.
         var row = new byte[stride];
         for (var y = 0; y < height; y++)
@@ -100,13 +109,23 @@ internal static class AnalysisHost
         }
     }
 
-    private static IReadOnlyList<Finding> ReadFindings(JsonElement root) => root.GetProperty("findings").EnumerateArray()
-        .Select(item => new Finding(Enum.Parse<FindingKind>(item.GetProperty("k").GetString()!),
-            new Rect(item.GetProperty("x").GetDouble(), item.GetProperty("y").GetDouble(), item.GetProperty("w").GetDouble(), item.GetProperty("h").GetDouble())))
-        .ToArray();
+    private static Analysis ReadAnalysis(JsonElement root) => new(
+        root.GetProperty("findings").EnumerateArray().Select(item => new Finding(Enum.Parse<FindingKind>(item.GetProperty("k").GetString()!), ReadRect(item))).ToArray(),
+        root.GetProperty("codes").EnumerateArray().Select(item => new CodeFinding(item.GetProperty("t").GetString() ?? "", ReadRect(item))).ToArray());
+
+    private static Rect ReadRect(JsonElement item) =>
+        new(item.GetProperty("x").GetDouble(), item.GetProperty("y").GetDouble(), item.GetProperty("w").GetDouble(), item.GetProperty("h").GetDouble());
 
     private static TextRecognition.Result ReadText(JsonElement root) => new(root.GetProperty("text").GetString() ?? "",
         root.GetProperty("lang").GetString() ?? "", root.GetProperty("lines").GetInt32(), root.GetProperty("words").GetInt32());
+
+    /// <summary>The same work the helper does, in whichever process runs it.</summary>
+    private static async Task<Analysis> AnalyzeInProcessAsync(BitmapSource image, int flags)
+    {
+        IReadOnlyList<Finding> findings = (flags & SensitiveFlag) != 0 ? await SensitiveContentDetector.DetectAsync(image) : [];
+        IReadOnlyList<CodeFinding> codes = (flags & CodesFlag) != 0 ? CodeReader.Read(image) : [];
+        return new Analysis(findings, codes);
+    }
 
     /// <summary>The child side: read one request, answer with one JSON object, exit.</summary>
     public static int Serve(Stream input, Stream output)
@@ -123,7 +142,7 @@ internal static class AnalysisHost
     {
         using var reader = new BinaryReader(input);
         if (reader.ReadInt32() != Magic) throw new InvalidDataException("잘못된 분석 요청입니다.");
-        var request = reader.ReadInt32(); var width = reader.ReadInt32(); var height = reader.ReadInt32();
+        var request = reader.ReadInt32(); var flags = reader.ReadInt32(); var width = reader.ReadInt32(); var height = reader.ReadInt32();
         ImageDocumentGuard(width, height);
         var pixels = reader.ReadBytes(checked(width * height * 4));
         if (pixels.Length != width * height * 4) throw new EndOfStreamException("이미지가 끝까지 전달되지 않았습니다.");
@@ -131,8 +150,13 @@ internal static class AnalysisHost
         image.Freeze();
         if (request == DetectRequest)
         {
-            var findings = await SensitiveContentDetector.DetectAsync(image);
-            return JsonSerializer.Serialize(new { ok = true, findings = findings.Select(f => new { k = f.Kind.ToString(), x = f.Bounds.X, y = f.Bounds.Y, w = f.Bounds.Width, h = f.Bounds.Height }) });
+            var analysis = await AnalyzeInProcessAsync(image, flags);
+            return JsonSerializer.Serialize(new
+            {
+                ok = true,
+                findings = analysis.Findings.Select(f => new { k = f.Kind.ToString(), x = f.Bounds.X, y = f.Bounds.Y, w = f.Bounds.Width, h = f.Bounds.Height }),
+                codes = analysis.Codes.Select(c => new { t = c.Text, x = c.Bounds.X, y = c.Bounds.Y, w = c.Bounds.Width, h = c.Bounds.Height })
+            });
         }
         if (request == TextRequest)
         {
