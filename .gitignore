@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+TestResults/
+.tools/
+.vs/
+.claude/
+*.user
+self-test-result.json
