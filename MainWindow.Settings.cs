@@ -20,7 +20,7 @@ internal sealed partial class MainWindow
         PreserveHistoryImage();
         var dialog = new Window
         {
-            Title = "환경 설정", Owner = this, Icon = Icon, Width = 540, Height = 580,
+            Title = "환경 설정", Owner = this, Icon = Icon, Width = 540, Height = Math.Min(660, CurrentWorkArea().Height),
             ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Ui.Background, Foreground = Ui.Text, FontSize = 12
@@ -34,7 +34,9 @@ internal sealed partial class MainWindow
         StackPanel AddTab(string title)
         {
             var panel = new StackPanel();
-            tabs.Items.Add(new TabItem { Header = title, Content = panel, Padding = new Thickness(14, 9, 14, 9) });
+            // A tab that outgrows the window scrolls, so nothing at its end is ever out of reach.
+            var scroller = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false };
+            tabs.Items.Add(new TabItem { Header = title, Content = scroller, Padding = new Thickness(14, 9, 14, 9) });
             return panel;
         }
         static CheckBox Check(string label, bool value) => new()
@@ -63,6 +65,13 @@ internal sealed partial class MainWindow
         general.Children.Add(Ui.Section("창", first: true));
         var trayCheck = Check("닫으면 트레이로", settings.CloseToTray);
         general.Children.Add(trayCheck);
+        // The sign-in entry itself is the setting, so the box always shows what Windows will actually do.
+        var startupCommand = demo ? null : StartupRegistration.Command();
+        var startupWas = !demo && StartupRegistration.IsEnabled();
+        var startup = Check("Windows 시작 시 트레이에서 실행", startupWas);
+        startup.IsEnabled = startupCommand != null;
+        if (startupCommand == null) startup.ToolTip = "배포된 DamaCapture.exe에서 켤 수 있습니다.";
+        general.Children.Add(startup);
         general.Children.Add(Ui.Section("기록"));
         var keep = Check("기록 유지", settings.KeepHistory);
         var keepImages = Check("이미지도 기록", settings.KeepCaptureImages);
@@ -113,8 +122,8 @@ internal sealed partial class MainWindow
         delayRow.Children.Add(delay);
         var seconds = Ui.Label("초", 12); seconds.Margin = new Thickness(7, 0, 0, 0); delayRow.Children.Add(seconds);
         captureTab.Children.Add(Row("캡처 지연", delayRow));
-        var afterValues = new[] { "editor", "copy", "save" };
-        var after = Ui.Choice(new[] { "복사하고 편집창 열기", "복사만", "저장 창 열기" }, Math.Max(0, Array.IndexOf(afterValues, settings.AfterCapture)));
+        var afterValues = new[] { "editor", "copy", "autosave", "save" };
+        var after = Ui.Choice(new[] { "복사하고 편집창 열기", "복사만", "폴더에 바로 저장", "저장 창 열기" }, Math.Max(0, Array.IndexOf(afterValues, settings.AfterCapture)));
         after.Width = 174; after.HorizontalAlignment = HorizontalAlignment.Left;
         captureTab.Children.Add(Row("캡처 후 동작", after));
         var detect = Check("민감 정보 감지", settings.DetectSensitive);
@@ -124,7 +133,7 @@ internal sealed partial class MainWindow
         captureTab.Children.Add(codesCheck);
 
         var saveTab = AddTab("저장");
-        var folderLabel = Ui.Label("저장 폴더 *필수", 12); folderLabel.Margin = new Thickness(0, 0, 0, 8); saveTab.Children.Add(folderLabel);
+        var folderLabel = Ui.Label("저장 폴더", 12); folderLabel.Margin = new Thickness(0, 0, 0, 8); saveTab.Children.Add(folderLabel);
         var folder = new TextBox { Text = settings.SaveFolder };
         var folderRow = new Grid { Margin = new Thickness(0, 0, 0, 24) };
         folderRow.ColumnDefinitions.Add(new ColumnDefinition());
@@ -148,31 +157,84 @@ internal sealed partial class MainWindow
         var qualityRow = new Grid(); qualityRow.ColumnDefinitions.Add(new ColumnDefinition()); qualityRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         qualityRow.Children.Add(quality); Grid.SetColumn(qualityText, 1); qualityRow.Children.Add(qualityText);
         saveTab.Children.Add(Row("JPEG 품질", qualityRow));
+        var formatValues = new[] { "png", "jpg" };
+        var format = Ui.Choice(new[] { "PNG", "JPG" }, Math.Max(0, Array.IndexOf(formatValues, settings.SaveFormat)));
+        format.Width = 96; format.HorizontalAlignment = HorizontalAlignment.Left;
+        saveTab.Children.Add(Row("바로 저장 형식", format));
+        var saveHelp = Ui.Label("캡처 탭의 캡처 후 동작을 ‘폴더에 바로 저장’으로 두면, 캡처하자마자 이 폴더에 저장하고 클립보드에도 복사합니다. 그 캡처를 가리거나 편집하면 같은 파일을 최신 결과로 덮어써서 가리기 전 이미지가 폴더에 남지 않습니다. 파일을 옮기거나 지우면 더 따라가지 않습니다.", 12, Ui.Muted);
+        saveHelp.LineHeight = 19; saveTab.Children.Add(saveHelp);
 
         var hotkeyTab = AddTab("단축키");
         var keys = Enumerable.Range('0', 10).Select(value => ((char)value).ToString())
             .Concat(Enumerable.Range('A', 26).Select(value => ((char)value).ToString()))
-            .Concat(Enumerable.Range(1, 12).Select(value => "F" + value)).ToArray();
-        static string DisplayKey(uint key) => key is >= 0x70 and <= 0x7B ? "F" + (key - 0x70 + 1) : ((char)key).ToString();
-        static uint VirtualKey(string key) => key.Length > 1 ? (uint)(0x70 + int.Parse(key[1..]) - 1) : key[0];
-        ComboBox HotkeyRow(string label, uint key)
+            .Concat(Enumerable.Range(1, 12).Select(value => "F" + value)).Append("PrtSc").ToArray();
+        static uint VirtualKey(string key) => key == "PrtSc" ? AppSettings.PrintScreen : key.Length > 1 ? (uint)(0x70 + int.Parse(key[1..]) - 1) : key[0];
+        var modifierValues = new uint[] { 6, 3, 5, 7, 2, 1, 4, 0 };
+        var modifierLabels = modifierValues.Select(value => value == 0 ? "없음" : AppSettings.ModifierText(value).Replace("+", " + ")).ToArray();
+        (ComboBox Modifiers, ComboBox Key) HotkeyRow(string label, uint modifiers, uint key)
         {
-            var choice = Ui.Choice(keys, Math.Max(0, Array.IndexOf(keys, DisplayKey(key))));
-            choice.Width = 82;
+            var modifierChoice = Ui.Choice(modifierLabels, Math.Max(0, Array.IndexOf(modifierValues, modifiers))); modifierChoice.Width = 150;
+            var keyChoice = Ui.Choice(keys, Math.Max(0, Array.IndexOf(keys, AppSettings.KeyText(key)))); keyChoice.Width = 86;
+            System.Windows.Automation.AutomationProperties.SetName(modifierChoice, label + " 조합 키"); System.Windows.Automation.AutomationProperties.SetName(keyChoice, label + " 키");
             var combination = new StackPanel { Orientation = Orientation.Horizontal };
-            var prefix = Ui.Label("Ctrl + Shift +", 12); prefix.Width = 92; combination.Children.Add(prefix); combination.Children.Add(choice);
+            combination.Children.Add(modifierChoice);
+            var plus = Ui.Label("+", 12, Ui.Muted); plus.Margin = new Thickness(8, 0, 8, 0); combination.Children.Add(plus);
+            combination.Children.Add(keyChoice);
             hotkeyTab.Children.Add(Row(label, combination));
-            return choice;
+            return (modifierChoice, keyChoice);
         }
-        var regionKey = HotkeyRow("영역 캡처", settings.RegionHotkey);
-        var windowKey = HotkeyRow("창 캡처", settings.WindowHotkey);
-        var scrollKey = HotkeyRow("스크롤 캡처", settings.ScrollHotkey);
+        var regionKey = HotkeyRow("영역 캡처", settings.RegionModifiers, settings.RegionHotkey);
+        var windowKey = HotkeyRow("창 캡처", settings.WindowModifiers, settings.WindowHotkey);
+        var scrollKey = HotkeyRow("스크롤 캡처", settings.ScrollModifiers, settings.ScrollHotkey);
+        var hotkeyHelp = Ui.Label("글자·숫자 키는 조합 키를 두 개 이상 함께 써야 합니다. F1~F12와 PrtSc는 조합 키 하나로도, 없이도 쓸 수 있습니다. PrtSc가 등록되지 않으면 Windows 설정 → 접근성 → 키보드의 ‘Print Screen 키로 화면 캡처 열기’를 꺼 보세요.", 12, Ui.Muted);
+        hotkeyHelp.LineHeight = 19; hotkeyHelp.Margin = new Thickness(0, 4, 0, 0); hotkeyTab.Children.Add(hotkeyHelp);
 
         var aboutTab = AddTab("정보");
         var version = typeof(MainWindow).Assembly.GetName().Version;
-        var product = Ui.Label($"담아 {version?.Major}.{version?.Minor}.{version?.Build}", 16, Ui.Text, FontWeights.Bold);
-        product.Margin = new Thickness(0, 0, 0, 18); aboutTab.Children.Add(product);
-        aboutTab.Children.Add(Row("만든 사람", Ui.Label("Nimdal", 12)));
+        // The mark and the name lead, then who made it and where to reach them; the fine print stays quiet.
+        var hero = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
+        var aboutMark = new BrandMark(48) { Margin = new Thickness(2, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center };
+        aboutMark.Loaded += (_, _) => aboutMark.Play();
+        hero.Children.Add(aboutMark);
+        var heroText = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        var productRow = new StackPanel { Orientation = Orientation.Horizontal };
+        productRow.Children.Add(Ui.Label("담아", 26, Ui.Text, FontWeights.Bold));
+        productRow.Children.Add(new Border
+        {
+            Background = Ui.Red, Padding = new Thickness(7, 1, 7, 2), Margin = new Thickness(10, 5, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+            Child = Ui.Label($"{version?.Major}.{version?.Minor}.{version?.Build}", 12, Ui.OnPrimary, FontWeights.SemiBold)
+        });
+        heroText.Children.Add(productRow);
+        var descriptor = Ui.Label("화면 캡처 · 이미지 편집기", 12, Ui.Muted); descriptor.Margin = new Thickness(1, 3, 0, 0); heroText.Children.Add(descriptor);
+        hero.Children.Add(heroText); aboutTab.Children.Add(hero);
+        aboutTab.Children.Add(Ui.Rule(20));
+        aboutTab.Children.Add(Ui.Section("만든 사람", first: true));
+        var maker = Ui.Label("Nimdal", 18, Ui.Text, FontWeights.SemiBold); maker.Margin = new Thickness(0, 2, 0, 8); aboutTab.Children.Add(maker);
+        // One line per way to reach them, the whole line a link: icon, what it is, the address, and an arrow out.
+        var contacts = new StackPanel();
+        void Contact(string label, string value, string icon, string target, string hint)
+        {
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(82) });
+            row.ColumnDefinitions.Add(new ColumnDefinition());
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var glyph = Ui.Icon(icon, 16, Ui.Muted); glyph.HorizontalAlignment = HorizontalAlignment.Left; row.Children.Add(glyph);
+            var name = Ui.Label(label, 12, Ui.Muted); Grid.SetColumn(name, 1); row.Children.Add(name);
+            var address = Ui.Label(value, 13, Ui.Text); Grid.SetColumn(address, 2); row.Children.Add(address);
+            var leave = Ui.Icon("external", 14, Ui.Muted); Grid.SetColumn(leave, 3); row.Children.Add(leave);
+            var button = Ui.Button("", () => Try(() => OpenBrowser(target)));
+            Ui.SetGhost(button, false, false);
+            button.Content = row; button.HorizontalContentAlignment = HorizontalAlignment.Stretch; button.Height = 34;
+            button.Padding = new Thickness(10, 0, 10, 0); button.Margin = new Thickness(-10, 0, -10, 2); button.ToolTip = hint;
+            System.Windows.Automation.AutomationProperties.SetName(button, hint);
+            contacts.Children.Add(button);
+        }
+        Contact("이메일", "0xnimdal@gmail.com", "mail", "mailto:0xnimdal@gmail.com", "이메일 보내기");
+        Contact("X", "@0xnimdal", "at", "https://x.com/0xnimdal", "X에서 @0xnimdal 열기");
+        Contact("Telegram", "@nimdal", "at", "https://t.me/nimdal", "Telegram에서 @nimdal 열기");
+        aboutTab.Children.Add(contacts);
+        aboutTab.Children.Add(Ui.Rule(14));
         FrameworkElement Link(string text, string target)
         {
             var link = new System.Windows.Documents.Hyperlink(new System.Windows.Documents.Run(text)) { Foreground = Ui.Text };
@@ -180,12 +242,12 @@ internal sealed partial class MainWindow
             System.Windows.Automation.AutomationProperties.SetName(link, text);
             return new TextBlock(link) { FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         }
-        aboutTab.Children.Add(Row("이메일", Link("0xnimdal@gmail.com", "mailto:0xnimdal@gmail.com")));
-        aboutTab.Children.Add(Row("X", Link("@0xnimdal", "https://x.com/0xnimdal")));
-        aboutTab.Children.Add(Row("Telegram", Link("@nimdal", "https://t.me/nimdal")));
-        aboutTab.Children.Add(Row("소스", Link("github.com/nimdalkr/damacapture", "https://github.com/nimdalkr/damacapture")));
-        aboutTab.Children.Add(Row("라이선스", Ui.Label("GPL-3.0", 12)));
-        aboutTab.Children.Add(Row("QR 읽기", Ui.Label("ZXing.Net · Apache-2.0", 12)));
+        Grid Fact(string label, FrameworkElement value) { var row = Row(label, value, 84); row.Margin = new Thickness(0, 0, 0, 6); return row; }
+        aboutTab.Children.Add(Fact("소스", Link("github.com/nimdalkr/damacapture", "https://github.com/nimdalkr/damacapture")));
+        // The app never calls a server, so checking for a newer version means opening the release page in the browser.
+        aboutTab.Children.Add(Fact("새 버전", Link("릴리스 페이지에서 확인", "https://github.com/nimdalkr/damacapture/releases/latest")));
+        aboutTab.Children.Add(Fact("라이선스", Ui.Label("GPL-3.0  ·  QR 읽기 ZXing.Net (Apache-2.0)", 12)));
+        var copyright = Ui.Label("Copyright © 2026 FOT", 11, Ui.Muted); copyright.Margin = new Thickness(0, 8, 0, 0); aboutTab.Children.Add(copyright);
         if (openAbout) tabs.SelectedItem = tabs.Items[^1];
 
         var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
@@ -210,12 +272,16 @@ internal sealed partial class MainWindow
             {
                 Error("올바른 폴더 경로를 입력하세요.", 2, folder); return;
             }
-            var r = VirtualKey((string)regionKey.SelectedItem);
-            var w = VirtualKey((string)windowKey.SelectedItem);
-            var s = VirtualKey((string)scrollKey.SelectedItem);
+            (uint Modifiers, uint Key) Chosen((ComboBox Modifiers, ComboBox Key) row) => (modifierValues[Math.Max(0, row.Modifiers.SelectedIndex)], VirtualKey((string)row.Key.SelectedItem));
+            var r = Chosen(regionKey); var w = Chosen(windowKey); var s = Chosen(scrollKey);
+            foreach (var (combination, row) in new[] { (r, regionKey), (w, windowKey), (s, scrollKey) })
+            {
+                if (AppSettings.ValidHotkey(combination.Modifiers, combination.Key)) continue;
+                Error("글자·숫자 키는 조합 키를 두 개 이상 함께 써야 합니다.\nF1~F12와 PrtSc는 조합 키 하나로도, 없이도 쓸 수 있습니다.", 3, row.Modifiers); return;
+            }
             if (new[] { r, w, s }.Distinct().Count() != 3)
             {
-                Error("영역·창·스크롤 캡처에 서로 다른 단축키를 지정하세요.", 3, r == w ? windowKey : scrollKey); return;
+                Error("영역·창·스크롤 캡처에 서로 다른 단축키를 지정하세요.", 3, r == w ? windowKey.Key : scrollKey.Key); return;
             }
 
             var previous = AppSettings.Validated(settings);
@@ -256,8 +322,10 @@ internal sealed partial class MainWindow
             candidate.ReadCodes = codesCheck.IsChecked == true;
             candidate.SaveFolder = fullFolder;
             candidate.JpegQuality = (int)quality.Value;
-            candidate.RegionHotkey = r; candidate.WindowHotkey = w; candidate.ScrollHotkey = s; candidate.HotkeyModifiers = 6;
-            var keysChanged = previous.RegionHotkey != r || previous.WindowHotkey != w || previous.ScrollHotkey != s || previous.HotkeyModifiers != 6;
+            candidate.SaveFormat = formatValues[Math.Max(0, format.SelectedIndex)];
+            candidate.RegionHotkey = r.Key; candidate.WindowHotkey = w.Key; candidate.ScrollHotkey = s.Key;
+            candidate.RegionModifiers = r.Modifiers; candidate.WindowModifiers = w.Modifiers; candidate.ScrollModifiers = s.Modifiers;
+            var keysChanged = (previous.RegionModifiers, previous.RegionHotkey) != r || (previous.WindowModifiers, previous.WindowHotkey) != w || (previous.ScrollModifiers, previous.ScrollHotkey) != s;
             var saved = false;
             dialog.IsEnabled = false;
             try
@@ -281,11 +349,12 @@ internal sealed partial class MainWindow
                 {
                     CopySettings(previous, settings);
                     var restored = RegisterHotkeys();
-                    Error("다른 앱에서 사용 중인 단축키가 있습니다. 조합을 바꿔주세요." +
-                        (restored ? "" : "\n이전 단축키도 등록하지 못했습니다. 사용 중인 앱을 확인하세요."), 3, regionKey);
+                    Error("다른 앱이나 Windows가 쓰고 있는 단축키가 있습니다. 조합을 바꿔주세요." +
+                        (restored ? "" : "\n이전 단축키도 등록하지 못했습니다. 사용 중인 앱을 확인하세요."), 3, regionKey.Key);
                     return;
                 }
                 settingsStore.Save(candidate); saved = true;
+                if (startupCommand != null && (startup.IsChecked == true) != startupWas) StartupRegistration.Set(startup.IsChecked == true, startupCommand);
                 history.SetPersistence(candidate.KeepHistory);
                 if (history.LastError != null) throw new IOException(history.LastError);
                 Motion.ReduceMotion = candidate.ReduceMotion;
@@ -338,6 +407,8 @@ internal sealed partial class MainWindow
         target.SaveFolder = source.SaveFolder; target.JpegQuality = source.JpegQuality; target.MaxHistory = source.MaxHistory;
         target.RegionHotkey = source.RegionHotkey; target.WindowHotkey = source.WindowHotkey;
         target.ScrollHotkey = source.ScrollHotkey; target.HotkeyModifiers = source.HotkeyModifiers;
+        target.RegionModifiers = source.RegionModifiers; target.WindowModifiers = source.WindowModifiers; target.ScrollModifiers = source.ScrollModifiers;
+        target.SaveFormat = source.SaveFormat; target.CustomInk = source.CustomInk;
     }
 
     private sealed class SettingsFolderOwner(IntPtr handle) : Forms.IWin32Window

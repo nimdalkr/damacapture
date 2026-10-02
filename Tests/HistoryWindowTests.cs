@@ -225,6 +225,67 @@ public static class HistoryWindowTests
             Invoke("SetHistorySelecting", false);
             Invoke("SetHistoryKind", "all");
 
+            // Text is typed in place, can be opened again and changed, and emptied text is removed.
+            var textDocument = Field<ImageDocument>("document");
+            var operationsBefore = textDocument.Operations.Count;
+            Invoke("BeginTextEdit", new Point(120, 140), null);
+            Field<TextBox>("textEditor").Text = "확인 필요\n두 번째 줄";
+            Invoke("CommitTextEdit");
+            var placed = textDocument.Operations.Last();
+            Assert(textDocument.Operations.Count == operationsBefore + 1 && placed.Kind == EditKind.Text && placed.Text == "확인 필요\n두 번째 줄"
+                && placed.Bounds.TopLeft == new Point(120, 140) && placed.Bounds.Height > 40, "Typed text was not placed where it was started, with both lines.");
+            Invoke("BeginTextEdit", new Point(0, 0), placed);
+            Assert(textDocument.Hidden == placed.Id && Field<TextBox>("textEditor").Text == placed.Text, "Opening placed text must take it out of the image and load it into the editor.");
+            Field<TextBox>("textEditor").Text = "수정됨";
+            Invoke("CommitTextEdit");
+            var changed = textDocument.Operations.Single(operation => operation.Id == placed.Id);
+            Assert(textDocument.Hidden == null && changed.Text == "수정됨" && changed.Bounds.TopLeft == placed.Bounds.TopLeft && changed.Bounds.Height < placed.Bounds.Height
+                && textDocument.Operations.Count == operationsBefore + 1, "Edited text was not updated in place.");
+            // A change of weight or font alone, with the same text and box, must not be mistaken for no change.
+            textDocument.Update(changed with { Bold = !changed.Bold, Font = "Consolas" });
+            var restyled = textDocument.Operations.Single(operation => operation.Id == placed.Id);
+            Assert(restyled.Bold != changed.Bold && restyled.Font == "Consolas", "A weight-only or font-only change to placed text was dropped.");
+            textDocument.Update(changed);
+            Invoke("BeginTextEdit", new Point(0, 0), changed);
+            Field<TextBox>("textEditor").Text = "버릴 내용";
+            Invoke("CancelTextEdit");
+            Assert(textDocument.Hidden == null && textDocument.Operations.Single(operation => operation.Id == placed.Id).Text == "수정됨", "Cancelling must leave placed text as it was.");
+            Invoke("BeginTextEdit", new Point(0, 0), changed);
+            Field<TextBox>("textEditor").Text = "  ";
+            Invoke("CommitTextEdit");
+            Assert(textDocument.Operations.All(operation => operation.Id != placed.Id) && textDocument.Operations.Count == operationsBefore, "Emptied text must be removed.");
+
+            // "폴더에 바로 저장": the file is written at once, follows edits, and is not recreated once the user removes it.
+            var saveFolder = Path.Combine(Path.GetTempPath(), "DamaCapture-autosave-" + Guid.NewGuid().ToString("N"));
+            var previousFolder = settings.SaveFolder; settings.SaveFolder = saveFolder;
+            try
+            {
+                bool Idle() => (bool)typeof(MainWindow).GetProperty("AutoSaveIdle", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+                var savedName = (string?)typeof(MainWindow).GetMethod("AutoSaveCapture", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                Assert(savedName != null, "The capture could not be saved to the folder.");
+                var savedPath = Path.Combine(saveFolder, savedName!);
+                PumpUntil(() => Idle() && history.Find(first.Id)?.FollowedPath == savedPath);
+                Assert(File.Exists(savedPath) && history.Find(first.Id)?.FollowedPath == savedPath && Pixels(ImageFiles.Load(savedPath)).SequenceEqual(Pixels(textDocument.Render())),
+                    "The capture was not written to the save folder as it looked.");
+                textDocument.Add(new EditOperation { Kind = EditKind.Solid, Bounds = new Rect(200, 200, 90, 60) });
+                Invoke("RefreshEditor"); Invoke("FlushAutoSave");
+                PumpUntil(Idle);
+                Assert(Pixels(ImageFiles.Load(savedPath)).SequenceEqual(Pixels(textDocument.Render())), "The saved file did not follow the edit, so the folder still holds the image from before it.");
+                File.Delete(savedPath);
+                textDocument.Add(new EditOperation { Kind = EditKind.Solid, Bounds = new Rect(10, 300, 40, 40) });
+                Invoke("RefreshEditor"); Invoke("FlushAutoSave");
+                PumpUntil(Idle);
+                Assert(!File.Exists(savedPath), "A file the user removed was recreated.");
+                // JPG is flattened onto white off the UI thread; it must still be written and readable.
+                settings.SaveFormat = "jpg";
+                var jpgName = (string?)typeof(MainWindow).GetMethod("AutoSaveCapture", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+                PumpUntil(Idle);
+                var jpgPath = Path.Combine(saveFolder, jpgName ?? "missing.jpg");
+                Assert(jpgName != null && jpgName.EndsWith(".jpg", StringComparison.Ordinal) && File.Exists(jpgPath) && ImageFiles.Load(jpgPath).PixelWidth == textDocument.Width,
+                    "Saving straight to the folder as JPG failed.");
+            }
+            finally { settings.SaveFolder = previousFolder; settings.SaveFormat = "png"; try { Directory.Delete(saveFolder, true); } catch (IOException) { } }
+
             // Automatic cleanup deletes only records past the chosen age, through the same path, and never the one being edited.
             var stale = history.RecordCapture(DateTimeOffset.Now.AddDays(-40), "오래된 창", "예시 앱", "Region", 8, 8);
             var staler = history.RecordCapture(DateTimeOffset.Now.AddDays(-90), "더 오래된 창", "예시 앱", "Region", 8, 8);
@@ -263,7 +324,9 @@ public static class HistoryWindowTests
             Assert(drained, "The closed editor still had unfinished dispatcher work after five seconds.");
             return ["편집 흐름: 자동 보관 상태·편집 복원·캡처/복사 기록 필터와 본문 검색·읽기 전용 미리보기·캡처 정책과 독립된 복사 이미지 편집 저장·숨기기 후 보관 유지 통과",
                 "기록 선택 삭제: 필터 기준 모두 선택·필터 변경 시 선택 정리·선택한 기록과 관리 이미지만 삭제 통과",
-                "기록 자동 정리: 기간 지난 기록만 삭제, 개수 상한에서 편집 중 기록 보호 통과", "창 종료: 실제 클립보드 접근 없는 격리된 예시 기록·두 이미지 저장 큐 처리 후 WPF 창 종료, 이중 Closing 완료·Dispatcher 예외 없음 통과"];
+                "기록 자동 정리: 기간 지난 기록만 삭제, 개수 상한에서 편집 중 기록 보호 통과",
+                "텍스트 바로 입력: 클릭한 자리에 입력·여러 줄, 놓은 글자 다시 편집, 취소 시 원래대로, 비우면 삭제 통과",
+                "폴더에 바로 저장: 캡처 즉시 저장, 편집을 따라 같은 파일 갱신, 사용자가 지운 파일은 다시 만들지 않음 통과", "창 종료: 실제 클립보드 접근 없는 격리된 예시 기록·두 이미지 저장 큐 처리 후 WPF 창 종료, 이중 Closing 완료·Dispatcher 예외 없음 통과"];
         }
         finally
         {

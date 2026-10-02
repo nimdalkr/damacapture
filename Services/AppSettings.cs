@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 namespace DamaCapture.Services;
@@ -27,7 +28,26 @@ public sealed class AppSettings
     public uint RegionHotkey { get; set; } = 0x31;
     public uint WindowHotkey { get; set; } = 0x32;
     public uint ScrollHotkey { get; set; } = 0x33;
-    public uint HotkeyModifiers { get; set; } = 6;
+    public uint HotkeyModifiers { get; set; } = 6; // Retained for older settings files; each hotkey now has its own.
+    public uint RegionModifiers { get; set; } = DefaultModifiers;
+    public uint WindowModifiers { get; set; } = DefaultModifiers;
+    public uint ScrollModifiers { get; set; } = DefaultModifiers;
+    /// <summary>File type for captures saved straight to the folder: "png" or "jpg".</summary>
+    public string SaveFormat { get; set; } = "png";
+    /// <summary>The user's own annotation color as #RRGGBB, or empty.</summary>
+    public string CustomInk { get; set; } = "";
+
+    public const uint PrintScreen = 0x2C;
+    /// <summary>Ctrl+Shift, in RegisterHotKey's bits (Alt 1, Ctrl 2, Shift 4).</summary>
+    public const uint DefaultModifiers = 6;
+    /// <summary>F keys and PrtSc can stand alone; a letter or digit must not, or ordinary typing would trigger it.</summary>
+    public static bool IsStandaloneKey(uint key) => key == PrintScreen || key is >= 0x70 and <= 0x7B;
+    public static bool ValidHotkey(uint modifiers, uint key) =>
+        ValidKey(key) && modifiers <= 7 && (IsStandaloneKey(key) || System.Numerics.BitOperations.PopCount(modifiers) >= 2);
+    public static string KeyText(uint key) => key == PrintScreen ? "PrtSc" : key is >= 0x70 and <= 0x7B ? "F" + (key - 0x70 + 1) : ((char)key).ToString();
+    public static string ModifierText(uint modifiers) =>
+        string.Join("+", new[] { (2u, "Ctrl"), (1u, "Alt"), (4u, "Shift") }.Where(part => (modifiers & part.Item1) != 0).Select(part => part.Item2));
+    public static string HotkeyText(uint modifiers, uint key) => modifiers == 0 ? KeyText(key) : ModifierText(modifiers) + "+" + KeyText(key);
 
     internal static string DefaultSaveFolder => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyPictures) is { Length: > 0 } pictures
@@ -43,6 +63,15 @@ public sealed class AppSettings
                 folder = Path.GetFullPath(settings.SaveFolder);
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { }
+        // A key that is not allowed falls back to its default; a combination that is not allowed falls back to Ctrl+Shift.
+        static (uint Modifiers, uint Key) Hotkey(uint modifiers, uint key, uint fallbackKey)
+        {
+            if (!ValidKey(key)) key = fallbackKey;
+            return (ValidHotkey(modifiers, key) ? modifiers : DefaultModifiers, key);
+        }
+        var region = Hotkey(settings.RegionModifiers, settings.RegionHotkey, 0x31);
+        var window = Hotkey(settings.WindowModifiers, settings.WindowHotkey, 0x32);
+        var scroll = Hotkey(settings.ScrollModifiers, settings.ScrollHotkey, 0x33);
         return new AppSettings
         {
             IncludeCursor = settings.IncludeCursor,
@@ -56,19 +85,20 @@ public sealed class AppSettings
             HistoryVersion = settings.HistoryVersion,
             ReduceMotion = settings.ReduceMotion,
             MaxHistory = 0,
-            AfterCapture = settings.AfterCapture is "editor" or "copy" or "save" ? settings.AfterCapture : "editor",
+            AfterCapture = settings.AfterCapture is "editor" or "copy" or "save" or "autosave" ? settings.AfterCapture : "editor",
             DetectSensitive = settings.DetectSensitive,
             ReadCodes = settings.ReadCodes,
             HistoryRetentionDays = Math.Clamp(settings.HistoryRetentionDays, 0, 3650),
             HistoryRetentionCount = Math.Clamp(settings.HistoryRetentionCount, 0, 100_000),
-            RegionHotkey = ValidKey(settings.RegionHotkey) ? settings.RegionHotkey : 0x31,
-            WindowHotkey = ValidKey(settings.WindowHotkey) ? settings.WindowHotkey : 0x32,
-            ScrollHotkey = ValidKey(settings.ScrollHotkey) ? settings.ScrollHotkey : 0x33,
-            HotkeyModifiers = settings.HotkeyModifiers is > 0 and <= 15 ? settings.HotkeyModifiers : 6
+            RegionHotkey = region.Key, WindowHotkey = window.Key, ScrollHotkey = scroll.Key,
+            RegionModifiers = region.Modifiers, WindowModifiers = window.Modifiers, ScrollModifiers = scroll.Modifiers,
+            HotkeyModifiers = 6,
+            SaveFormat = settings.SaveFormat == "jpg" ? "jpg" : "png",
+            CustomInk = System.Text.RegularExpressions.Regex.IsMatch(settings.CustomInk ?? "", "^#[0-9A-Fa-f]{6}$") ? settings.CustomInk! : ""
         };
     }
 
-    private static bool ValidKey(uint key) => key is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5A or >= 0x70 and <= 0x7B;
+    private static bool ValidKey(uint key) => key == PrintScreen || key is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5A or >= 0x70 and <= 0x7B;
 }
 
 public sealed class SettingsStore

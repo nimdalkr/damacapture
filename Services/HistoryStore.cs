@@ -26,6 +26,8 @@ public sealed record HistoryEntry(string Path, DateTime SavedAt)
     public int Width { get; init; }
     public int Height { get; init; }
     public string? SnapshotPath { get; init; }
+    /// <summary>A file in the user's save folder that is rewritten as this record is edited ("폴더에 바로 저장").</summary>
+    public string? FollowedPath { get; init; }
 
     [JsonIgnore]
     public string Name => System.IO.Path.GetFileName(Path);
@@ -198,6 +200,23 @@ public sealed class HistoryStore
     }
 
     /// <summary>Attaches an export without changing capture time or window metadata.</summary>
+    /// <summary>Remembers the file that follows this record's edits, so reopening the record later keeps it up to date.</summary>
+    public bool AttachFollowedFile(Guid id, string path)
+    {
+        var fullPath = ExportPath(path);
+        if (fullPath is null) return false;
+        lock (gate)
+        {
+            lastError = null;
+            var index = entries.FindIndex(entry => entry.Id == id);
+            if (index < 0 || !entries[index].HasImage) return false;
+            var entry = entries[index] with { FollowedPath = fullPath };
+            entries[index] = entry;
+            Persist(entry);
+            return true;
+        }
+    }
+
     public bool AttachExport(Guid id, string path)
     {
         var fullPath = ExportPath(path);
@@ -576,6 +595,7 @@ public sealed class HistoryStore
         return entry with
         {
             Id = id, Path = ExportPath(entry.Path) ?? "", SnapshotPath = snapshot,
+            FollowedPath = entry.HasImage ? ExportPath(entry.FollowedPath) : null,
             Text = payload.Text, FilePaths = payload.Files,
             WindowTitle = entry.WindowTitle ?? "", ApplicationName = entry.ApplicationName ?? "", CaptureMode = entry.CaptureMode ?? "",
             Width = entry.HasImage ? Math.Max(0, entry.Width) : 0, Height = entry.HasImage ? Math.Max(0, entry.Height) : 0

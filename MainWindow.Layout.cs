@@ -66,13 +66,15 @@ internal sealed partial class MainWindow
         ("Select", "선택", "select", Key.V), ("Pen", "펜", "pen", Key.P), ("Highlight", "형광펜", "highlight", Key.H),
         ("Arrow", "화살표", "arrow", Key.A), ("Line", "직선", "line", Key.L), ("Rectangle", "사각형", "rectangle", Key.R),
         ("Ellipse", "원", "ellipse", Key.E), ("Text", "텍스트", "text", Key.T), ("Number", "번호", "number", Key.N),
-        ("Mosaic", "모자이크", "mosaic", Key.M), ("Blur", "블러", "blur", Key.B), ("Solid", "가리기", "solid", Key.None), ("Crop", "자르기", "crop", Key.C)
+        ("Mosaic", "모자이크", "mosaic", Key.M), ("Blur", "블러", "blur", Key.B), ("Solid", "가리기", "solid", Key.S), ("Crop", "자르기", "crop", Key.C)
     };
     private static string ToolName(string tool) => EditTools.FirstOrDefault(x => x.Id == tool).Label ?? "편집";
     private static string ToolShortcut(string tool) { var key = EditTools.FirstOrDefault(x => x.Id == tool).Key; return key == Key.None ? "" : key.ToString(); }
     private static string ToolTipText(string tool) { var key = ToolShortcut(tool); return ToolName(tool) + (key.Length > 0 ? $" ({key})" : ""); }
-    private static string HotkeyText(uint key) => "Ctrl+Shift+" + (key is >= 0x70 and <= 0x7B ? "F" + (key - 0x70 + 1) : ((char)key).ToString());
-    private string HotkeyHint() => $"{HotkeyText(settings.RegionHotkey)} 영역  ·  {HotkeyText(settings.WindowHotkey)} 창  ·  {HotkeyText(settings.ScrollHotkey)} 스크롤";
+    private string RegionKeys => Services.AppSettings.HotkeyText(settings.RegionModifiers, settings.RegionHotkey);
+    private string WindowKeys => Services.AppSettings.HotkeyText(settings.WindowModifiers, settings.WindowHotkey);
+    private string ScrollKeys => Services.AppSettings.HotkeyText(settings.ScrollModifiers, settings.ScrollHotkey);
+    private string HotkeyHint() => $"{RegionKeys} 영역  ·  {WindowKeys} 창  ·  {ScrollKeys} 스크롤";
     private static Border Divider() => new() { Width = 1, Height = 20, Background = Ui.Line, Margin = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
     private static MenuItem MenuAction(string text, Action action, string? shortcut = null)
     {
@@ -167,7 +169,8 @@ internal sealed partial class MainWindow
         var cursor = new CheckBox { Content = "커서 포함", FontSize = 12, IsChecked = settings.IncludeCursor, Margin = new Thickness(0), VerticalAlignment = VerticalAlignment.Center };
         cursor.Click += (_, _) => settings.IncludeCursor = cursor.IsChecked == true; delayRow.Children.Add(cursor);
         var links = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        links.Children.Add(Ui.IconButton("이미지 열기 (Ctrl+O)", "open", OpenDialog, compact: true));
+        var openLink = Ui.CommandButton("열기", "open", OpenDialog); Ui.SetGhost(openLink, false, false); openLink.ToolTip = "이미지 열기 (Ctrl+O)";
+        AutomationProperties.SetName(openLink, "이미지 열기"); links.Children.Add(openLink);
         var historyLink = Ui.CommandButton("기록", "history", () => ShowPage("history")); Ui.SetGhost(historyLink, false, false); historyLink.Margin = new Thickness(2, 0, 2, 0); links.Children.Add(historyLink);
         links.Children.Add(Ui.IconButton("환경 설정", "settings", ShowSettings, compact: true));
         DockPanel.SetDock(links, Dock.Right); options.Children.Add(links); options.Children.Add(delayRow);
@@ -175,7 +178,7 @@ internal sealed partial class MainWindow
         DockPanel.SetDock(optionsBar, Dock.Bottom); root.Children.Add(optionsBar);
         var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 10, 12, 10) };
         // Each launcher button captures immediately. Region capture is the one most people want, so it leads.
-        void CaptureButton(string label, string icon, Action action, uint? hotkey = null, bool primary = false)
+        void CaptureButton(string label, string icon, Action action, string? hotkey = null, bool primary = false)
         {
             var b = Ui.IconButton(label, icon, action, primary); b.Width = primary ? 104 : 66; b.Height = 62;
             if (primary)
@@ -186,15 +189,15 @@ internal sealed partial class MainWindow
                 if (b.Content is StackPanel stack) { stack.Children.RemoveAt(0); stack.Children.Insert(0, mark); }
                 mark.Loaded += (_, _) => mark.Play();
             }
-            b.ToolTip = hotkey is uint key ? $"{label} ({HotkeyText(key)})" : label;
+            b.ToolTip = hotkey != null ? $"{label} ({hotkey})" : label;
             bar.Children.Add(b);
         }
-        CaptureButton("영역 캡처", "region", async () => await StartCapture(CaptureMode.Region), settings.RegionHotkey, primary: true);
+        CaptureButton("영역 캡처", "region", async () => await StartCapture(CaptureMode.Region), RegionKeys, primary: true);
         CaptureButton("자유형", "freehand", async () => await StartCapture(CaptureMode.Freehand));
-        CaptureButton("창", "window", async () => await StartCapture(CaptureMode.Window), settings.WindowHotkey);
+        CaptureButton("창", "window", async () => await StartCapture(CaptureMode.Window), WindowKeys);
         CaptureButton("단위 영역", "element", async () => await StartCapture(CaptureMode.Element));
         CaptureButton("전체 화면", "screen", async () => await StartCapture(CaptureMode.FullScreen));
-        CaptureButton("스크롤", "scroll", async () => await StartScroll(), settings.ScrollHotkey);
+        CaptureButton("스크롤", "scroll", async () => await StartScroll(), ScrollKeys);
         CaptureButton("크기 지정", "fixed", CaptureFixedSize);
         var more = Ui.IconButton("더보기", "more", () => { }); more.Width = 66; more.Height = 62;
         more.Click += (_, _) =>
@@ -265,14 +268,14 @@ internal sealed partial class MainWindow
     {
         var menu = NewMenu();
         foreach (var (mode, label) in new[] { (CaptureMode.Region, "영역 캡처"), (CaptureMode.Freehand, "자유형"), (CaptureMode.Window, "창"), (CaptureMode.Element, "단위 영역"), (CaptureMode.FullScreen, "전체 화면"), (CaptureMode.AllScreens, "모든 모니터"), (CaptureMode.LastRegion, "이전 영역") })
-            menu.Items.Add(MenuAction(label, async () => await StartCapture(mode), mode == CaptureMode.Region ? HotkeyText(settings.RegionHotkey) : mode == CaptureMode.Window ? HotkeyText(settings.WindowHotkey) : null));
-        menu.Items.Add(MenuAction("크기 지정", CaptureFixedSize)); menu.Items.Add(MenuAction("스크롤", async () => await StartScroll(), HotkeyText(settings.ScrollHotkey)));
+            menu.Items.Add(MenuAction(label, async () => await StartCapture(mode), mode == CaptureMode.Region ? RegionKeys : mode == CaptureMode.Window ? WindowKeys : null));
+        menu.Items.Add(MenuAction("크기 지정", CaptureFixedSize)); menu.Items.Add(MenuAction("스크롤", async () => await StartScroll(), ScrollKeys));
         menu.Items.Add(new Separator()); menu.Items.Add(MenuAction("캡처 실행창", () => ShowPage("home"))); return menu;
     }
     private ContextMenu EditorMenu()
     {
         var menu = NewMenu();
-        var extract = MenuAction("텍스트 추출", ExtractText); extract.Icon = Ui.Icon("ocr", 16); extract.IsEnabled = document != null; menu.Items.Add(extract);
+        var extract = MenuAction("텍스트 추출", ExtractText); extract.IsEnabled = document != null; menu.Items.Add(extract);
         menu.Items.Add(MenuAction("이미지 붙여넣기", PasteImage, "Ctrl+V"));
         menu.Items.Add(new Separator());
         void ImageAction(string title, Action action) { var item = MenuAction(title, action); item.IsEnabled = document != null; menu.Items.Add(item); }
@@ -316,7 +319,7 @@ internal sealed partial class MainWindow
         AutomationProperties.SetName(preservationLabel, "기록 상태"); AutomationProperties.SetLiveSetting(preservationLabel, AutomationLiveSetting.Polite);
         Grid.SetColumn(preservationLabel, 1);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        var newCapture = Ui.CommandButton("새 캡처", "capture", async () => await StartCapture(CaptureMode.Region)); newCapture.ToolTip = $"새 캡처 ({HotkeyText(settings.RegionHotkey)})";
+        var newCapture = Ui.CommandButton("새 캡처", "capture", async () => await StartCapture(CaptureMode.Region)); newCapture.ToolTip = $"새 캡처 ({RegionKeys})";
         var captureModes = MenuButton("캡처 방식", "chevron-down", CaptureMenu);
         var captureSplit = Ui.Split(newCapture, captureModes); captureSplit.Margin = new Thickness(0, 0, 6, 0); actions.Children.Add(captureSplit);
         var openImage = Ui.CommandButton("열기", "open", OpenDialog); Ui.SetGhost(openImage, false, false); openImage.ToolTip = "이미지 열기 (Ctrl+O)";
@@ -352,13 +355,14 @@ internal sealed partial class MainWindow
         canvasHost = canvasBorder;
         canvasScroll = new ScrollViewer { Content = canvasBorder, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Background = Ui.Canvas };
         canvasScroll.SizeChanged += (_, _) => { if (currentPage == "editor" && fitView) Fit(); }; body.Children.Add(canvasScroll);
-        // Overlays on the canvas area: QR bubbles beside their codes, the detection decision card at the top, transient feedback at the bottom.
-        body.Children.Add(BuildCodeLayer()); body.Children.Add(BuildSensitiveCard()); body.Children.Add(BuildToastHost());
+        // Overlays on the canvas area: QR bubbles beside their codes, the in-place text editor, the detection decision card at the top, transient feedback at the bottom.
+        body.Children.Add(BuildCodeLayer()); body.Children.Add(BuildTextLayer()); body.Children.Add(BuildSensitiveCard()); body.Children.Add(BuildToastHost());
         canvasScroll.PreviewMouseWheel += (_, e) =>
         {
             if (document == null || Keyboard.Modifiers != ModifierKeys.Control) return;
             e.Handled = true; SetZoom(e.Delta > 0 ? zoom * 1.25 : zoom / 1.25);
         };
+        HookCanvasPan(canvasScroll);
         if (document == null)
         {
             var empty = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
@@ -372,6 +376,31 @@ internal sealed partial class MainWindow
         detailsPanel = RecentPanel(); detailsPanel.Visibility = detailsOpen ? Visibility.Visible : Visibility.Collapsed; Grid.SetColumn(detailsPanel, 1); body.Children.Add(detailsPanel); editorProperties = detailsPanel; root.Children.Add(body);
         undoButton.IsEnabled = document?.CanUndo == true; redoButton.IsEnabled = document?.CanRedo == true;
         RefreshToolButtons(false); RefreshEditor(); UpdateToolProperties(false); UpdateZoomInfo(); return root;
+    }
+    // A zoomed-in image is moved by dragging with the wheel button, or with the left button while Space is held.
+    private void HookCanvasPan(ScrollViewer viewer)
+    {
+        var panning = false; Point from = default; double startX = 0, startY = 0; Cursor? previous = null;
+        void Begin(MouseButtonEventArgs e)
+        {
+            surface.CompletePendingEdit();
+            panning = true; from = e.GetPosition(viewer); startX = viewer.HorizontalOffset; startY = viewer.VerticalOffset;
+            previous = viewer.Cursor; viewer.Cursor = Cursors.SizeAll; viewer.CaptureMouse(); e.Handled = true;
+        }
+        void End() { if (!panning) return; panning = false; viewer.Cursor = previous; if (viewer.IsMouseCaptured) viewer.ReleaseMouseCapture(); }
+        viewer.PreviewMouseDown += (_, e) =>
+        {
+            if (document == null || panning) return;
+            if (e.ChangedButton == MouseButton.Middle || (e.ChangedButton == MouseButton.Left && Keyboard.IsKeyDown(Key.Space) && Keyboard.FocusedElement is not TextBox)) Begin(e);
+        };
+        viewer.PreviewMouseMove += (_, e) =>
+        {
+            if (!panning) return;
+            var now = e.GetPosition(viewer); fitView = false;
+            viewer.ScrollToHorizontalOffset(startX - (now.X - from.X)); viewer.ScrollToVerticalOffset(startY - (now.Y - from.Y)); e.Handled = true;
+        };
+        viewer.PreviewMouseUp += (_, e) => { if (panning) { End(); e.Handled = true; } };
+        viewer.LostMouseCapture += (_, _) => End();
     }
     private void AddToolGroup(Panel panel, string[] ids)
     {
@@ -471,20 +500,45 @@ internal sealed partial class MainWindow
         strokeCaption = Caption("두께"); strokeProperties.Children.Add(strokeCaption);
         var stroke = Ui.Choice(StrokeLabels, Math.Max(0, Array.IndexOf(new[] { 2d, 4d, 8d, 12d }, surface.Stroke))); stroke.Width = 92; stroke.MinHeight = 28; stroke.Height = 28; stroke.FontSize = 12; stroke.Margin = new Thickness(0, 0, 18, 0);
         AutomationProperties.SetName(stroke, "주석 두께");
-        stroke.SelectionChanged += (_, _) => { if (stroke.SelectedIndex >= 0) surface.Stroke = new[] { 2, 4, 8, 12 }[stroke.SelectedIndex]; }; strokeProperties.Children.Add(stroke);
+        stroke.SelectionChanged += (_, _) => { if (updating || stroke.SelectedIndex < 0) return; surface.Stroke = new[] { 2, 4, 8, 12 }[stroke.SelectedIndex]; RestyleTextEditor(); }; strokeProperties.Children.Add(stroke);
         strokeChoice = stroke;
         strokeProperties.Children.Add(Caption("색", 6));
         inkSwatches.Clear();
-        foreach (var (hex, name) in new[] { ("#EE202E", "빨강"), ("#FFCE32", "노랑"), ("#288FFF", "파랑"), ("#FFFFFF", "흰색"), ("#080809", "검정") })
+        Button Swatch(Color ink, string name)
         {
-            var ink = (Color)ColorConverter.ConvertFromString(hex);
-            var b = Ui.Button("", () => { surface.Ink = ink; RefreshInkSwatches(); });
+            var b = Ui.Button("", () => { surface.Ink = ink; RefreshInkSwatches(); RestyleTextEditor(); });
             b.Width = 26; b.Height = 26; b.MinHeight = 26; b.Padding = new Thickness(3); b.Margin = new Thickness(0, 0, 2, 0);
             b.Background = Brushes.Transparent; b.BorderThickness = new Thickness(1.5);
-            b.Content = new Border { Background = Ui.Brush(hex), CornerRadius = new CornerRadius(4), BorderBrush = Ui.Brush("#33080809"), BorderThickness = new Thickness(1), Width = 17, Height = 17 };
+            var fill = new SolidColorBrush(ink); fill.Freeze();
+            b.Content = new Border { Background = fill, CornerRadius = new CornerRadius(4), BorderBrush = Ui.Brush("#33080809"), BorderThickness = new Thickness(1), Width = 17, Height = 17 };
             b.ToolTip = name; AutomationProperties.SetName(b, "주석 색상 " + name);
-            inkSwatches.Add((b, ink)); strokeProperties.Children.Add(b);
+            inkSwatches.Add((b, ink)); return b;
         }
+        foreach (var (hex, name) in new[] { ("#EE202E", "빨강"), ("#FFCE32", "노랑"), ("#288FFF", "파랑"), ("#FFFFFF", "흰색"), ("#080809", "검정") })
+            strokeProperties.Children.Add(Swatch((Color)ColorConverter.ConvertFromString(hex), name));
+        // One more color of the user's own, kept between runs; the + opens the Windows color picker.
+        var customHost = new StackPanel { Orientation = Orientation.Horizontal }; strokeProperties.Children.Add(customHost);
+        void ShowCustomSwatch()
+        {
+            inkSwatches.RemoveAll(entry => customHost.Children.Contains(entry.Swatch)); customHost.Children.Clear();
+            if (CustomInk() is Color own) customHost.Children.Add(Swatch(own, "내 색"));
+        }
+        ShowCustomSwatch();
+        var pick = Ui.IconButton("다른 색 고르기", "plus", () =>
+        {
+            using var dialog = new System.Windows.Forms.ColorDialog { FullOpen = true, AnyColor = true, Color = System.Drawing.Color.FromArgb(surface.Ink.R, surface.Ink.G, surface.Ink.B) };
+            // The dialog takes the focus; text being typed stays open so the chosen color applies to it.
+            keepTextEditor = true;
+            System.Windows.Forms.DialogResult answer;
+            try { answer = dialog.ShowDialog(new SettingsFolderOwner(new System.Windows.Interop.WindowInteropHelper(this).Handle)); }
+            finally { keepTextEditor = false; }
+            if (answer != System.Windows.Forms.DialogResult.OK) { RestyleTextEditor(); return; }
+            var chosen = Color.FromRgb(dialog.Color.R, dialog.Color.G, dialog.Color.B);
+            settings.CustomInk = $"#{chosen.R:X2}{chosen.G:X2}{chosen.B:X2}";
+            if (!demo) { try { settingsStore.Save(settings); } catch (Exception) { } }
+            surface.Ink = chosen; ShowCustomSwatch(); RefreshInkSwatches(); RestyleTextEditor();
+        }, compact: true);
+        pick.Width = 26; pick.Height = 26; pick.Padding = new Thickness(5); strokeProperties.Children.Add(pick);
         RefreshInkSwatches();
         // Rectangles and ellipses: outline only, or painted inside with the same color.
         var fillSegments = new StackPanel { Orientation = Orientation.Horizontal };
@@ -498,19 +552,28 @@ internal sealed partial class MainWindow
         fillProperties = new Border { Child = fillSegments, Background = Ui.Track, CornerRadius = new CornerRadius(7), Padding = new Thickness(2), Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         strokeProperties.Children.Add(fillProperties); RefreshFillSegments(false);
         textProperties = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(16, 0, 0, 0) }; toolProperties.Children.Add(textProperties);
-        textProperties.Children.Add(Caption("내용"));
-        var text = new TextBox { Text = surface.AnnotationText, Width = 180, MinHeight = 28, Height = 28, FontSize = 12, Padding = new Thickness(6, 0, 6, 0), VerticalContentAlignment = VerticalAlignment.Center }; text.TextChanged += (_, _) => surface.AnnotationText = text.Text; AutomationProperties.SetName(text, "텍스트 내용"); textProperties.Children.Add(text);
-        var fontCaption = Caption("글꼴"); fontCaption.Margin = new Thickness(14, 0, 8, 0); textProperties.Children.Add(fontCaption);
+        var fontCaption = Caption("글꼴"); textProperties.Children.Add(fontCaption);
         var fonts = FontChoices();
         var font = Ui.Choice(fonts.Select(choice => choice.Name).ToArray(), Math.Max(0, Array.FindIndex(fonts, choice => choice.Source == surface.Font)));
         font.Width = 128; font.MinHeight = 28; font.Height = 28; font.FontSize = 12; AutomationProperties.SetName(font, "텍스트 글꼴");
-        font.SelectionChanged += (_, _) => { if (font.SelectedIndex >= 0) surface.Font = fonts[font.SelectedIndex].Source; };
-        textProperties.Children.Add(font);
-        boldButton = Ui.Button("굵게", () => { surface.Bold = !surface.Bold; RefreshBoldButton(); });
+        font.SelectionChanged += (_, _) => { if (updating || font.SelectedIndex < 0) return; surface.Font = fonts[font.SelectedIndex].Source; RestyleTextEditor(); };
+        textProperties.Children.Add(font); fontChoice = font;
+        boldButton = Ui.Button("굵게", () => { surface.Bold = !surface.Bold; RefreshBoldButton(); RestyleTextEditor(); });
         boldButton.MinHeight = 28; boldButton.Height = 28; boldButton.FontSize = 12; boldButton.Padding = new Thickness(10, 0, 10, 0); boldButton.Margin = new Thickness(6, 0, 0, 0);
         AutomationProperties.SetName(boldButton, "굵게"); textProperties.Children.Add(boldButton); RefreshBoldButton(false);
         toolProperties.Children.Add(toolHint);
-        return new Border { Child = toolProperties, Height = 40, Background = Ui.Background, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 1, 0, 1), ClipToBounds = true };
+        extractCancel = Ui.Button("취소", LeaveExtractMode);
+        extractCancel.MinHeight = 26; extractCancel.Height = 26; extractCancel.FontSize = 12; extractCancel.Padding = new Thickness(10, 0, 10, 0); extractCancel.Margin = new Thickness(12, 0, 0, 0);
+        extractCancel.ToolTip = "텍스트 추출 취소 (Esc)"; extractCancel.Visibility = Visibility.Collapsed; toolProperties.Children.Add(extractCancel);
+        return toolOptionsBar = new Border { Child = toolProperties, Height = 40, Background = Ui.Background, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 1, 0, 1), ClipToBounds = true };
+    }
+    private Border? toolOptionsBar;
+    private Button? extractCancel;
+    private ComboBox? fontChoice;
+    private Color? CustomInk()
+    {
+        try { return string.IsNullOrWhiteSpace(settings.CustomInk) ? null : (Color)ColorConverter.ConvertFromString(settings.CustomInk); }
+        catch (FormatException) { return null; }
     }
     private TextBlock? strokeCaption;
     private ComboBox? strokeChoice;

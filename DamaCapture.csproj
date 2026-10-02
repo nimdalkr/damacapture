@@ -12,7 +12,7 @@
     <RootNamespace>DamaCapture</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\dama.ico</ApplicationIcon>
-    <Version>0.9.7</Version>
+    <Version>1.0.0</Version>
     <Product>담아</Product>
     <Description>화면 캡처 · 이미지 편집기</Description>
     <Company>FOT</Company>

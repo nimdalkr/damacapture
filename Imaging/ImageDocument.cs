@@ -34,6 +34,12 @@ public sealed class ImageDocument
     public bool CanUndo => undo.Count > 0;
     public bool CanRedo => redo.Count > 0;
     public long Revision { get; private set; }
+    private Guid? hidden;
+    /// <summary>
+    /// An operation left out of the flattened image while it is being edited in place. It is view state only:
+    /// history and the revision do not change, and it must be cleared before anything is exported.
+    /// </summary>
+    public Guid? Hidden { get => hidden; set { if (hidden == value) return; hidden = value; rendered = null; } }
     /// <summary>Approximate retained bitmap and edit data, counting shared objects only once.</summary>
     public long EstimatedMemoryBytes => RetainedBytes(includeRendered: true);
 
@@ -133,7 +139,7 @@ public sealed class ImageDocument
         if (rendered is not null) return rendered;
         if (operations.Count == 0) return rendered = source;
         BitmapSource composed = source;
-        var annotations = operations.Where(item => !IsRedaction(item.Kind)).ToArray();
+        var annotations = operations.Where(item => !IsRedaction(item.Kind) && item.Id != hidden).ToArray();
         if (annotations.Length > 0)
         {
             var visual = new DrawingVisual();
@@ -198,6 +204,7 @@ public sealed class ImageDocument
     private static bool Equivalent(EditOperation left, EditOperation right) => left.Id == right.Id
         && left.Kind == right.Kind && left.Bounds == right.Bounds && left.Text == right.Text
         && left.Color == right.Color && left.Stroke == right.Stroke && left.Strength == right.Strength
+        && left.Font == right.Font && left.Bold == right.Bold && left.Filled == right.Filled
         && left.Points.AsSpan().SequenceEqual(right.Points);
 
     private static EditOperation Validate(EditOperation operation)

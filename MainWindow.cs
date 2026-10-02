@@ -79,7 +79,7 @@ internal sealed partial class MainWindow : Window
         historyWriter.Completed += (id, _) => Dispatcher.BeginInvoke(() => HistoryWriteCompleted(id));
         historySaveTimer.Tick += (_, _) => { historySaveTimer.Stop(); PreserveHistoryImage(); };
         clipboardSyncTimer.Tick += (_, _) => SyncClipboard();
-        Deactivated += (_, _) => FlushClipboardSync();
+        Deactivated += (_, _) => { if (!keepTextEditor) CommitTextEdit(); FlushClipboardSync(); };
         idleTimer.Tick += (_, _) => ReleaseIdleMemory();
         IsVisibleChanged += (_, _) => { idleTimer.Stop(); if (!IsVisible && !demo) idleTimer.Start(); };
         Title = "담아 캡처"; Width = 576; Height = 178; MinWidth = 576; MinHeight = 178; ResizeMode = ResizeMode.CanMinimize; WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -88,14 +88,12 @@ internal sealed partial class MainWindow : Window
         surface.SelectionChanged += RefreshSelection;
         surface.RequestBringIntoView += (_, e) => e.Handled = true;
         surface.ExtractRequested += ExtractTextFrom;
+        surface.TextEditRequested += BeginTextEdit; surface.CommitRequested += CommitTextEdit; surface.CancelRequested += CancelTextEdit;
+        // Turning to the image folds any open QR bubble so it never covers what is being edited.
+        surface.PreviewMouseLeftButtonDown += (_, _) => CollapseCodes();
         surface.CropRequested += bounds => { Try(() => { document?.Crop(bounds); surface.SelectedId = null; dirty = true; RefreshEditor(); Fit(); Toast("잘랐습니다", "되돌리기", Undo); }); };
-        Loaded += (_, _) =>
-        {
-            var dark = 0; DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref dark, 4);
-            if (!demo) { SetupTray(); RegisterHotkeys(); ApplyClipboardSetting(); }
-            ScheduleHistoryTrim(announce: true);
-            if (demo) { if (clipboardDemo) AddClipboardDemoEntries(); SetImage(ImageFactory.Sample()); RecordCaptureHistory(new CaptureContext(DateTimeOffset.Now, "디자인 검토 · 예시 창", "예시 앱", "Region")); ShowPage("editor", true); Notify("예시 이미지"); }
-        };
+        autoSaveTimer.Tick += (_, _) => { if (currentHistoryId is Guid id) WriteFollowedFile(id); else autoSaveTimer.Stop(); };
+        Loaded += (_, _) => InitializeResident(clipboardDemo);
         Closing += OnClosing;
         if (Application.Current != null) Application.Current.SessionEnding += OnSessionEnding;
         Closed += (_, _) => { FlushClipboardSync(); if (Application.Current != null) Application.Current.SessionEnding -= OnSessionEnding; historySearchTimer.Stop(); toastTimer.Stop(); countdownWindow?.Close(); clipboardMonitor?.Dispose(); hotkeys?.Dispose(); tray?.Dispose(); foreach (var window in pinWindows.ToArray()) window.Close(); };
@@ -106,14 +104,47 @@ internal sealed partial class MainWindow : Window
         Drop += (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) OpenFile(files[0]); };
         ShowPage("home");
     }
+    // Tray, hotkeys and clipboard collection start once, whether the window is shown or the app starts in the tray.
+    private bool residentReady;
+    private void InitializeResident(bool clipboardDemo = false)
+    {
+        if (residentReady) return;
+        residentReady = true;
+        var dark = 0; DwmSetWindowAttribute(new WindowInteropHelper(this).EnsureHandle(), 20, ref dark, 4);
+        if (!demo)
+        {
+            SetupTray(); RegisterHotkeys(); ApplyClipboardSetting();
+            // A copy run from a temporary folder (an unpacked download) must not take over the sign-in entry.
+            var running = Environment.ProcessPath ?? "";
+            if (!running.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase))
+                try { StartupRegistration.Refresh(StartupRegistration.Command()); } catch (Exception) { }
+        }
+        ScheduleHistoryTrim(announce: true);
+        if (demo) { if (clipboardDemo) AddClipboardDemoEntries(); SetImage(ImageFactory.Sample()); RecordCaptureHistory(new CaptureContext(DateTimeOffset.Now, "디자인 검토 · 예시 창", "예시 앱", "Region")); ShowPage("editor", true); Notify("예시 이미지"); }
+    }
+    /// <summary>Started by Windows at sign-in: no window, just the tray icon and the hotkeys.</summary>
+    internal void StartInTray()
+    {
+        InitializeResident();
+        idleTimer.Start();
+    }
+    /// <summary>Another launch of the app asks the running one to come forward.</summary>
+    internal void ShowFromOutside()
+    {
+        // Never during a capture: the window would land in the picture.
+        if (exiting || capturing) return;
+        Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; Activate();
+    }
     private void SelectTool(string tool)
     {
         surface.CompletePendingEdit();
         if (surface.Tool == tool) return;
-        surface.Tool = tool; surface.Cursor = tool == "Select" ? Cursors.Arrow : Cursors.Cross;
+        surface.Tool = tool; surface.Cursor = tool == "Select" ? Cursors.Arrow : tool == "Text" ? Cursors.IBeam : Cursors.Cross;
+        CollapseCodes(); UpdateCodeLayerVisibility();
         RefreshToolButtons();
         UpdateToolProperties(true);
-        Notify(toolHint?.Text ?? "");
+        // The extraction hint already sits in the options strip; the status line says how to leave.
+        Notify(tool == "Extract" ? "Esc를 누르면 텍스트 추출을 취소합니다." : toolHint?.Text ?? "");
     }
     private void UpdateStrengthLabel()
     {
@@ -132,7 +163,7 @@ internal sealed partial class MainWindow : Window
             "Select" => "편집을 선택해 이동하거나 크기를 조절하세요.",
             "Crop" => "남길 영역을 드래그하세요.",
             "Extract" => "추출할 영역을 드래그하세요 (더블클릭: 전체)",
-            "Text" => "내용을 입력한 뒤 놓을 곳을 클릭하세요.",
+            "Text" => "글자를 넣을 곳을 클릭해 바로 입력하세요. 놓은 글자는 다시 클릭하면 고칠 수 있습니다.",
             "Number" => "놓을 곳을 클릭하세요.",
             _ => "이미지 위에서 드래그하세요."
         };
@@ -144,6 +175,9 @@ internal sealed partial class MainWindow : Window
         ShowStrokeAsSize(tool is "Text" or "Number");
         toolHint.Visibility = maskProperties.Visibility == Visibility.Collapsed && strokeProperties.Visibility == Visibility.Collapsed && textProperties.Visibility == Visibility.Collapsed ? Visibility.Visible : Visibility.Collapsed;
         toolProperties.Visibility = document == null ? Visibility.Hidden : Visibility.Visible;
+        // Without an image there are no options to show, so the strip does not leave an empty band.
+        if (toolOptionsBar != null) toolOptionsBar.Visibility = document == null ? Visibility.Collapsed : Visibility.Visible;
+        if (extractCancel != null) extractCancel.Visibility = tool == "Extract" ? Visibility.Visible : Visibility.Collapsed;
         UpdateStrengthLabel();
         if (animate) Motion.Enter(toolProperties, y: 5, duration: 150);
     }
@@ -170,6 +204,7 @@ internal sealed partial class MainWindow : Window
         RefreshSelection();
         ScheduleHistoryImage();
         ScheduleClipboardSync();
+        ScheduleAutoSave();
         RefreshPreservationState();
     }
     private void RefreshSelection()
@@ -197,8 +232,9 @@ internal sealed partial class MainWindow : Window
         if (imageInfo != null) imageInfo.Text = document == null ? "" : $"{document.Width:N0} × {document.Height:N0} px";
         if (zoomButton != null) { zoomButton.Content = document == null ? "–" : zoom.ToString("P0"); zoomButton.IsEnabled = document != null; }
     }
-    private void Undo() => Try(() => { surface.CancelPendingEdit(); document?.Undo(); surface.SelectedId = null; dirty = true; RefreshEditor(); if (fitView) Fit(); });
-    private void Redo() => Try(() => { surface.CancelPendingEdit(); document?.Redo(); surface.SelectedId = null; dirty = true; RefreshEditor(); if (fitView) Fit(); });
+    // The status line follows what just happened, so an undone action is not still announced as done.
+    private void Undo() => Try(() => { surface.CancelPendingEdit(); if (document?.CanUndo != true) return; document.Undo(); surface.SelectedId = null; dirty = true; RefreshEditor(); if (fitView) Fit(); Notify("되돌렸습니다"); });
+    private void Redo() => Try(() => { surface.CancelPendingEdit(); if (document?.CanRedo != true) return; document.Redo(); surface.SelectedId = null; dirty = true; RefreshEditor(); if (fitView) Fit(); Notify("다시 실행했습니다"); });
     private void SetImage(BitmapSource image) { RememberCurrentDocument(); historySaveTimer.Stop(); FlushClipboardSync(); captureClipboard.Stop(); currentHistoryId = null; documentName = "캡처 이미지"; document = new ImageDocument(image); surface.SetDocument(document); surface.Tool = "Mosaic"; surface.Cursor = Cursors.Cross; if (!editorPageHasImage) editorPage = null; dirty = true; fitView = true; landPending = true; }
     // An editor built around an image is reused for the next one; only the empty-state page has to be rebuilt.
     private bool editorPageHasImage;
@@ -292,11 +328,13 @@ internal sealed partial class MainWindow : Window
     // "복사만" leaves the user's focus where it was; the editor still holds the capture for later.
     private void FinishCapture(bool wasVisible)
     {
-        if (settings.AfterCapture == "copy")
+        if (settings.AfterCapture is "copy" or "autosave")
         {
+            // A capture saved to the folder is announced when its file has actually been written.
+            var saving = settings.AfterCapture == "autosave" && AutoSaveCapture() != null;
             var copied = CopyCapture();
             if (wasVisible) RestoreWindow(activate: false);
-            else if (copied) tray?.ShowBalloonTip(1500, "담아", "이미지를 복사했습니다.", Forms.ToolTipIcon.Info);
+            else if (copied && !saving) tray?.ShowBalloonTip(1500, "담아", "이미지를 복사했습니다.", Forms.ToolTipIcon.Info);
             return;
         }
         RestoreWindow(activate: true);
@@ -351,10 +389,47 @@ internal sealed partial class MainWindow : Window
     {
         if (!RequireImage()) return;
         surface.CompletePendingEdit();
-        var bitmap = document!.Render(); var w = new Window { Title = "담아 | 화면 위에 고정", Icon = Icon, Topmost = true, Width = Math.Clamp(bitmap.PixelWidth * .6, 240, 850), Height = Math.Clamp(bitmap.PixelHeight * .6 + 35, 180, 650), Background = Ui.Panel };
-        var image = new Image { Source = bitmap, Stretch = Stretch.Uniform }; w.Content = image;
-        var menu = new ContextMenu(); var copy = new MenuItem { Header = "이미지 복사" }; copy.Click += (_, _) => Try(() => ClipboardTransfer.SetImage(bitmap)); menu.Items.Add(copy); var close = new MenuItem { Header = "고정 창 닫기" }; close.Click += (_, _) => w.Close(); menu.Items.Add(close); image.ContextMenu = menu;
-        pinWindows.Add(w); w.Closed += (_, _) => pinWindows.Remove(w); w.Show();
+        var bitmap = document!.Render();
+        // Just the image on the screen: no title bar, dragged anywhere, and see-through when asked.
+        var aspect = (double)bitmap.PixelHeight / bitmap.PixelWidth;
+        var startWidth = Math.Clamp(bitmap.PixelWidth * .6, 160, 900);
+        var w = new Window
+        {
+            Title = "담아 | 화면 위에 고정", Icon = Icon, Topmost = true, WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent,
+            ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, Width = startWidth, Height = startWidth * aspect, WindowStartupLocation = WindowStartupLocation.CenterScreen
+        };
+        var image = new Image { Source = bitmap, Stretch = Stretch.Fill };
+        var frame = new Border { Child = image, BorderBrush = Ui.Primary, BorderThickness = new Thickness(1), Background = Ui.Panel, ToolTip = "드래그: 이동 · 휠: 크기 · 더블클릭 또는 Esc: 닫기 · 오른쪽 클릭: 메뉴" };
+        ToolTipService.SetInitialShowDelay(frame, 900); w.Content = frame;
+        AutomationProperties.SetName(w, "화면 위에 고정한 이미지");
+        var menu = new ContextMenu(); var copy = new MenuItem { Header = "이미지 복사", InputGestureText = "Ctrl+C" }; copy.Click += (_, _) => Try(() => ClipboardTransfer.SetImage(bitmap)); menu.Items.Add(copy);
+        var opacity = new MenuItem { Header = "투명도" };
+        foreach (var percent in new[] { 100, 75, 50, 25 })
+        {
+            var level = new MenuItem { Header = percent + "%", IsCheckable = true, IsChecked = percent == 100 };
+            level.Click += (_, _) => { w.Opacity = percent / 100.0; foreach (MenuItem other in opacity.Items) other.IsChecked = ReferenceEquals(other, level); };
+            opacity.Items.Add(level);
+        }
+        menu.Items.Add(opacity);
+        var close = new MenuItem { Header = "고정 창 닫기", InputGestureText = "Esc" }; close.Click += (_, _) => w.Close(); menu.Items.Add(close); frame.ContextMenu = menu;
+        w.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { e.Handled = true; w.Close(); }
+            else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control) { e.Handled = true; Try(() => ClipboardTransfer.SetImage(bitmap)); }
+        };
+        frame.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            if (e.ClickCount == 2) { w.Close(); return; }
+            try { w.DragMove(); } catch (InvalidOperationException) { }
+        };
+        // The wheel resizes around the window's centre and keeps the image's proportions.
+        w.PreviewMouseWheel += (_, e) =>
+        {
+            var width = Math.Clamp(w.Width * (e.Delta > 0 ? 1.1 : 1 / 1.1), 80, 3000); var height = width * aspect;
+            w.Left -= (width - w.Width) / 2; w.Top -= (height - w.Height) / 2; w.Width = width; w.Height = height; e.Handled = true;
+        };
+        pinWindows.Add(w); w.Closed += (_, _) => pinWindows.Remove(w); w.Show(); w.Activate();
     }
     private void Print()
     {
@@ -373,7 +448,7 @@ internal sealed partial class MainWindow : Window
     {
         hotkeys?.Dispose(); hotkeys = new GlobalHotkeys(this);
         hotkeys.Pressed += id => Dispatcher.BeginInvoke(async () => { if (capturing || OwnedWindows.Cast<Window>().Any(window => window.IsVisible)) return; if (id == 3) await StartScroll(); else await StartCapture(id == 2 ? CaptureMode.Window : CaptureMode.Region); });
-        var a = hotkeys.Register(1, settings.HotkeyModifiers, settings.RegionHotkey); var b = hotkeys.Register(2, settings.HotkeyModifiers, settings.WindowHotkey); var c = hotkeys.Register(3, settings.HotkeyModifiers, settings.ScrollHotkey);
+        var a = hotkeys.Register(1, settings.RegionModifiers, settings.RegionHotkey); var b = hotkeys.Register(2, settings.WindowModifiers, settings.WindowHotkey); var c = hotkeys.Register(3, settings.ScrollModifiers, settings.ScrollHotkey);
         if (!(a && b && c)) Notify("일부 전역 단축키가 다른 앱과 겹칩니다. 설정에서 변경할 수 있습니다.");
         return a && b && c;
     }
@@ -395,7 +470,7 @@ internal sealed partial class MainWindow : Window
     {
         if (removingHistory || capturing) { e.Cancel = true; return; }
         if (closingHistory && !exiting) { e.Cancel = true; return; }
-        if (!exiting && settings.CloseToTray && !demo) { e.Cancel = true; Hide(); tray?.ShowBalloonTip(1800, "담아", $"트레이에서 실행 중입니다. {HotkeyText(settings.RegionHotkey)}로 캡처하세요.", Forms.ToolTipIcon.Info); return; }
+        if (!exiting && settings.CloseToTray && !demo) { e.Cancel = true; Hide(); tray?.ShowBalloonTip(1800, "담아", $"트레이에서 실행 중입니다. {RegionKeys}로 캡처하세요.", Forms.ToolTipIcon.Info); return; }
         if (exiting) return;
         e.Cancel = true;
         Dispatcher.BeginInvoke(Exit);
@@ -406,8 +481,9 @@ internal sealed partial class MainWindow : Window
         try
         {
             clipboardMonitor?.SetEnabled(false);
-            surface.CompletePendingEdit(); PreserveHistoryImage();
+            surface.CompletePendingEdit(); PreserveHistoryImage(); FlushAutoSave();
             Task.Run(FlushHistoryWritersAsync).Wait(TimeSpan.FromSeconds(5));
+            autoSaveTail.Wait(TimeSpan.FromSeconds(3));
         }
         catch (Exception) { }
     }
@@ -421,7 +497,7 @@ internal sealed partial class MainWindow : Window
         try
         {
             clipboardMonitor?.SetEnabled(false);
-            PreserveHistoryImage(); await FlushHistoryWritersAsync();
+            PreserveHistoryImage(); FlushAutoSave(); await FlushHistoryWritersAsync(); await autoSaveTail;
             if ((historyWriter.HasFailures || clipboardWriter.HasFailures || history.HasPersistenceFailures || clipboardHistory.HasPersistenceFailures) && MessageBox.Show(this, "일부 기록을 남기지 못했습니다. 그냥 종료할까요?", "기록", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
             exiting = true; Close();
         }
@@ -433,6 +509,8 @@ internal sealed partial class MainWindow : Window
         if (Keyboard.FocusedElement is TextBox || Keyboard.FocusedElement is ComboBox) return;
         // With the Korean IME active, letter keys arrive as ImeProcessed; use the physical key.
         var key = e.Key == Key.ImeProcessed ? e.ImeProcessedKey : e.Key;
+        // Space over the canvas is held to drag the view, so it must not press whichever button has focus.
+        if (key == Key.Space && currentPage == "editor" && canvasScroll?.IsMouseOver == true) { e.Handled = true; return; }
         if (Keyboard.Modifiers == ModifierKeys.Control)
         {
             if (key == Key.S) { Save(); e.Handled = true; } else if (key == Key.C) { Copy(); e.Handled = true; } else if (key == Key.V) { PasteImage(); e.Handled = true; } else if (key == Key.O) { OpenDialog(); e.Handled = true; } else if (key == Key.Z) { Undo(); e.Handled = true; } else if (key == Key.Y) { Redo(); e.Handled = true; }
@@ -446,7 +524,7 @@ internal sealed partial class MainWindow : Window
             var tool = document == null || key == Key.None ? null : EditTools.FirstOrDefault(x => x.Key == key).Id;
             if (tool != null) { SelectTool(tool); e.Handled = true; }
             else if (key == Key.Delete) { surface.DeleteSelection(); e.Handled = true; }
-            else if (key == Key.Escape) { surface.CancelPendingEdit(); surface.Select(null); if (surface.Tool == "Extract") LeaveExtractMode(); e.Handled = true; }
+            else if (key == Key.Escape) { surface.CancelPendingEdit(); surface.Select(null); CollapseCodes(); if (surface.Tool == "Extract") LeaveExtractMode(); e.Handled = true; }
         }
     }
     // Waiting in the tray, the app keeps only what the next capture needs: the open image stays, older edit

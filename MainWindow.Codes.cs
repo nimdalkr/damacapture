@@ -14,58 +14,95 @@ namespace DamaCapture;
 /// <summary>
 /// QR codes found in a capture get a bubble beside them with what they say. A web link can be opened in the
 /// browser; anything else is only shown and copied, so a code never launches something on its own. Bubbles are
-/// window chrome, not part of the image: saving, copying and printing never include them.
+/// window chrome, not part of the image: saving, copying and printing never include them. Once the user starts
+/// working on the image a bubble folds into a small chip on its code, so it never sits on what is being edited.
 /// </summary>
 internal sealed partial class MainWindow
 {
-    private readonly List<CodeFinding> codes = new();
+    private sealed class CodeBubble(CodeFinding code, Grid root, FrameworkElement card, Grid tail, Button chip)
+    {
+        public CodeFinding Code { get; } = code;
+        public Grid Root { get; } = root;
+        public FrameworkElement Card { get; } = card;
+        public Grid Tail { get; } = tail;
+        public Button Chip { get; } = chip;
+        public bool Expanded { get; set; } = true;
+    }
+
+    private readonly List<CodeBubble> bubbles = new();
     private Canvas? codeLayer;
     /// <summary>The image size the bubbles were found on; a crop makes their positions meaningless.</summary>
     private Size codeImageSize;
-    private EventHandler? codeLayoutHandler;
-    private const double BubbleGap = 12, BubbleWidth = 300;
+    private EventHandler? overlayLayoutHandler;
+    private const double BubbleGap = 12, BubbleWidth = 300, BubbleTail = 8, ChipSize = 28;
 
     private Canvas BuildCodeLayer()
     {
         // No background, so only the bubbles themselves take clicks; the canvas underneath keeps working.
         codeLayer = new Canvas { ClipToBounds = true };
-        codeLayoutHandler ??= (_, _) => PlaceBubbles();
-        surface.LayoutUpdated -= codeLayoutHandler; surface.LayoutUpdated += codeLayoutHandler;
-        if (canvasScroll != null) canvasScroll.ScrollChanged += (_, _) => PlaceBubbles();
+        overlayLayoutHandler ??= (_, _) => PlaceOverlays();
+        surface.LayoutUpdated -= overlayLayoutHandler; surface.LayoutUpdated += overlayLayoutHandler;
+        if (canvasScroll != null) canvasScroll.ScrollChanged += (_, _) => PlaceOverlays();
         return codeLayer;
     }
+
+    /// <summary>Overlays on the canvas follow the image through zoom, scroll and panel changes.</summary>
+    private void PlaceOverlays() { PlaceBubbles(); PlaceTextEditor(); }
 
     private void ShowCodes(IReadOnlyList<CodeFinding> found)
     {
         ClearCodes();
         if (found.Count == 0 || document == null || codeLayer == null) return;
-        codes.AddRange(found);
         codeImageSize = new Size(document.Width, document.Height);
-        surface.Marks = codes.Select(code => code.Bounds).ToArray();
-        foreach (var code in codes)
+        foreach (var code in found)
         {
             var bubble = BuildBubble(code);
-            codeLayer.Children.Add(bubble);
-            Motion.Enter(bubble, x: -6, duration: 180);
+            bubbles.Add(bubble); codeLayer.Children.Add(bubble.Root);
+            Motion.Enter(bubble.Root, x: -6, duration: 180);
         }
+        surface.Marks = bubbles.Select(bubble => bubble.Code.Bounds).ToArray();
+        UpdateCodeLayerVisibility();
         PlaceBubbles();
     }
 
     private void ClearCodes()
     {
-        codes.Clear();
+        bubbles.Clear();
         surface.Marks = [];
         codeLayer?.Children.Clear();
     }
 
-    private void CloseBubble(FrameworkElement bubble)
+    private void CloseBubble(CodeBubble bubble)
     {
-        if (bubble.Tag is CodeFinding code) codes.Remove(code);
-        codeLayer?.Children.Remove(bubble);
-        surface.Marks = codes.Select(other => other.Bounds).ToArray();
+        bubbles.Remove(bubble);
+        codeLayer?.Children.Remove(bubble.Root);
+        surface.Marks = bubbles.Select(other => other.Code.Bounds).ToArray();
     }
 
-    private FrameworkElement BuildBubble(CodeFinding code)
+    /// <summary>Folds every open bubble into its chip; called when the user turns to the image.</summary>
+    private bool CollapseCodes()
+    {
+        var any = false;
+        foreach (var bubble in bubbles.Where(bubble => bubble.Expanded)) { SetBubbleExpanded(bubble, false); any = true; }
+        if (any) PlaceBubbles();
+        return any;
+    }
+
+    private void SetBubbleExpanded(CodeBubble bubble, bool expanded)
+    {
+        bubble.Expanded = expanded;
+        bubble.Card.Visibility = bubble.Tail.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        bubble.Chip.Visibility = expanded ? Visibility.Collapsed : Visibility.Visible;
+        if (expanded) Motion.Enter(bubble.Root, x: -4, duration: 140);
+    }
+
+    // Text extraction drags over the whole image, so nothing may sit on it in that mode.
+    private void UpdateCodeLayerVisibility()
+    {
+        if (codeLayer != null) codeLayer.Visibility = surface.Tool == "Extract" ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private CodeBubble BuildBubble(CodeFinding code)
     {
         var link = code.Link;
         var column = new StackPanel();
@@ -107,15 +144,19 @@ internal sealed partial class MainWindow
         var tail = new Grid { IsHitTestVisible = false, Tag = "" };
         tail.Children.Add(new Path { Fill = Ui.Panel });
         tail.Children.Add(new Path { Stroke = Ui.Brush("#DAD5CE"), StrokeThickness = 1, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round });
-        var bubble = new Grid { Tag = code, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
-        bubble.Children.Add(card); bubble.Children.Add(tail);
-        AutomationProperties.SetName(bubble, link != null ? "QR 코드 링크" : "QR 코드 내용");
+        // Folded, only this chip remains on the code's corner.
+        var chip = Ui.IconButton(link != null ? "QR 코드 링크 보기" : "QR 코드 내용 보기", "qrcode", () => { }, compact: true);
+        chip.Width = ChipSize; chip.Height = ChipSize; chip.Padding = new Thickness(5); chip.Visibility = Visibility.Collapsed;
+        Ui.SetPrimary(chip, false, false);
+        var root = new Grid { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        root.Children.Add(card); root.Children.Add(tail); root.Children.Add(chip);
+        AutomationProperties.SetName(root, link != null ? "QR 코드 링크" : "QR 코드 내용");
+        var bubble = new CodeBubble(code, root, card, tail, chip);
         close.Click += (_, _) => CloseBubble(bubble);
+        chip.Click += (_, _) => { SetBubbleExpanded(bubble, true); PlaceBubbles(); };
         PointTail(tail, "left");
         return bubble;
     }
-
-    private const double BubbleTail = 8;
 
     /// <summary>Sets which edge of the bubble carries the tail: "left" or "right" point sideways at the code, "top" points up at it.</summary>
     private static void PointTail(Grid tail, string side)
@@ -140,28 +181,34 @@ internal sealed partial class MainWindow
 
     private void PlaceBubbles()
     {
-        if (codeLayer == null || codes.Count == 0 || document == null) return;
+        if (codeLayer == null || bubbles.Count == 0 || document == null) return;
         if (document.Width != codeImageSize.Width || document.Height != codeImageSize.Height) { ClearCodes(); return; }
         if (!surface.IsVisible || !codeLayer.IsVisible || PresentationSource.FromVisual(surface) == null) return;
         GeneralTransform transform;
         try { transform = surface.TransformToVisual(codeLayer); }
         catch (InvalidOperationException) { return; }
         var viewport = new Rect(0, 0, codeLayer.ActualWidth, codeLayer.ActualHeight);
-        foreach (var child in codeLayer.Children.OfType<Grid>())
+        foreach (var bubble in bubbles)
         {
-            if (child.Tag is not CodeFinding code) continue;
-            var box = transform.TransformBounds(code.Bounds);
-            var tail = child.Children.OfType<Grid>().First();
-            var width = child.ActualWidth > 0 ? child.ActualWidth : child.DesiredSize.Width;
-            var height = child.ActualHeight > 0 ? child.ActualHeight : child.DesiredSize.Height;
+            var root = bubble.Root;
+            var box = transform.TransformBounds(bubble.Code.Bounds);
+            root.Visibility = box.IntersectsWith(viewport) ? Visibility.Visible : Visibility.Collapsed;
+            if (!bubble.Expanded)
+            {
+                // The chip sits on the code's top-right corner, half outside it.
+                Canvas.SetLeft(root, Math.Round(Math.Clamp(box.Right - ChipSize / 2, 0, Math.Max(0, viewport.Right - ChipSize))));
+                Canvas.SetTop(root, Math.Round(Math.Clamp(box.Top - ChipSize / 2, 0, Math.Max(0, viewport.Bottom - ChipSize))));
+                continue;
+            }
+            var width = root.ActualWidth > 0 ? root.ActualWidth : root.DesiredSize.Width;
+            var height = root.ActualHeight > 0 ? root.ActualHeight : root.DesiredSize.Height;
             // Beside the code when there is room, to the right first; otherwise below it.
             double x, y = box.Top - BubbleTail - 8;
-            if (box.Right + BubbleGap + width <= viewport.Right) { x = box.Right + BubbleGap - BubbleTail; PointTail(tail, "left"); }
-            else if (box.Left - BubbleGap - width >= viewport.Left) { x = box.Left - BubbleGap - width + BubbleTail; PointTail(tail, "right"); }
-            else { x = Math.Clamp(box.Left - 16, viewport.Left, Math.Max(viewport.Left, viewport.Right - width)); y = box.Bottom + BubbleGap - BubbleTail; PointTail(tail, "top"); }
+            if (box.Right + BubbleGap + width <= viewport.Right) { x = box.Right + BubbleGap - BubbleTail; PointTail(bubble.Tail, "left"); }
+            else if (box.Left - BubbleGap - width >= viewport.Left) { x = box.Left - BubbleGap - width + BubbleTail; PointTail(bubble.Tail, "right"); }
+            else { x = Math.Clamp(box.Left - 16, viewport.Left, Math.Max(viewport.Left, viewport.Right - width)); y = box.Bottom + BubbleGap - BubbleTail; PointTail(bubble.Tail, "top"); }
             y = Math.Clamp(y, 4, Math.Max(4, viewport.Bottom - height - 4));
-            Canvas.SetLeft(child, Math.Round(x)); Canvas.SetTop(child, Math.Round(y));
-            child.Visibility = box.IntersectsWith(viewport) ? Visibility.Visible : Visibility.Collapsed;
+            Canvas.SetLeft(root, Math.Round(x)); Canvas.SetTop(root, Math.Round(y));
         }
     }
 }

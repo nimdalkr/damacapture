@@ -59,6 +59,58 @@ public static class ServiceTests
         Assert(HistoryStore.Expired(new[] { saved, fresh }, 30, 0, now).SequenceEqual(new[] { saved.Id }), "A record without a capture time must age by its saved time.");
         results.Add("기록 자동 정리: 기본 끄기, 범위 검증, 기간·개수 규칙과 편집 중 기록 보호 통과");
 
+        // Hotkeys: PrtSc and F keys may stand alone, letters and digits need two modifiers; values that break the rule fall back.
+        Assert(AppSettings.ValidHotkey(0, AppSettings.PrintScreen) && AppSettings.ValidHotkey(2, 0x70) && AppSettings.ValidHotkey(3, 0x43)
+            && !AppSettings.ValidHotkey(0, 0x41) && !AppSettings.ValidHotkey(2, 0x43) && !AppSettings.ValidHotkey(8, AppSettings.PrintScreen), "Hotkey combination rules are wrong.");
+        Assert(AppSettings.HotkeyText(0, AppSettings.PrintScreen) == "PrtSc" && AppSettings.HotkeyText(6, 0x31) == "Ctrl+Shift+1" && AppSettings.HotkeyText(3, 0x7B) == "Ctrl+Alt+F12", "Hotkey text is wrong.");
+        settings.Save(new AppSettings { RegionModifiers = 0, RegionHotkey = AppSettings.PrintScreen, WindowModifiers = 2, WindowHotkey = 0x41, ScrollModifiers = 99, AfterCapture = "autosave", SaveFormat = "gif", CustomInk = "red" });
+        loaded = settings.Load();
+        Assert(loaded.RegionModifiers == 0 && loaded.RegionHotkey == AppSettings.PrintScreen, "PrtSc on its own must be kept.");
+        Assert(loaded.WindowModifiers == AppSettings.DefaultModifiers && loaded.WindowHotkey == 0x41 && loaded.ScrollModifiers == AppSettings.DefaultModifiers,
+            "A letter with one modifier, or an unknown modifier value, must fall back to Ctrl+Shift.");
+        Assert(loaded.AfterCapture == "autosave" && loaded.SaveFormat == "png" && loaded.CustomInk == "", "Auto-save mode must be kept; an unknown format or color must fall back.");
+        settings.Save(new AppSettings { CustomInk = "#12ab9F", SaveFormat = "jpg" });
+        loaded = settings.Load();
+        Assert(loaded.CustomInk == "#12ab9F" && loaded.SaveFormat == "jpg", "A valid custom color and the JPG format did not round-trip.");
+        // A settings file written before per-hotkey modifiers existed must come out as Ctrl+Shift.
+        File.WriteAllText(settings.FilePath, "{\"regionHotkey\":49,\"windowHotkey\":50,\"hotkeyModifiers\":6}");
+        loaded = settings.Load();
+        Assert(loaded.RegionModifiers == 6 && loaded.WindowModifiers == 6 && loaded.ScrollModifiers == 6 && loaded.RegionHotkey == 0x31, "Older settings lost their Ctrl+Shift hotkeys.");
+        results.Add("단축키·저장 설정: PrtSc·F키 단독 허용, 글자 키는 조합 2개 이상, 잘못된 값 복구, 이전 설정 파일 호환 통과");
+
+        // Sign-in start is written, repointed and removed under a throwaway key, never the real Run entry.
+        const string testRoot = @"Software\DamaCapture-SelfTest";
+        var runKey = testRoot + @"\" + Guid.NewGuid().ToString("N");
+        try
+        {
+            Assert(StartupRegistration.Command(@"C:\Apps\Dama\DamaCapture.exe") == "\"C:\\Apps\\Dama\\DamaCapture.exe\" --tray"
+                && StartupRegistration.Command(@"C:\Program Files\dotnet\dotnet.exe") == null, "The sign-in command must name only the app's own executable.");
+            Assert(!StartupRegistration.IsEnabled(runKey, "DamaCapture"), "A missing entry was reported as enabled.");
+            StartupRegistration.Set(true, "\"C:\\old\\DamaCapture.exe\" --tray", runKey, "DamaCapture");
+            Assert(StartupRegistration.IsEnabled(runKey, "DamaCapture"), "The sign-in entry was not written.");
+            StartupRegistration.Refresh("\"C:\\new\\DamaCapture.exe\" --tray", runKey, "DamaCapture");
+            using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(runKey))
+                Assert((string?)key?.GetValue("DamaCapture") == "\"C:\\new\\DamaCapture.exe\" --tray", "An entry left by an older copy was not pointed at the running one.");
+            var rejected = false;
+            try { StartupRegistration.Set(true, null, runKey, "DamaCapture"); } catch (InvalidOperationException) { rejected = true; }
+            Assert(rejected, "Registering without an executable of the app's own must be refused.");
+            StartupRegistration.Set(false, null, runKey, "DamaCapture");
+            Assert(!StartupRegistration.IsEnabled(runKey, "DamaCapture"), "The sign-in entry was not removed.");
+            StartupRegistration.Refresh("\"C:\\new\\DamaCapture.exe\" --tray", runKey, "DamaCapture");
+            Assert(!StartupRegistration.IsEnabled(runKey, "DamaCapture"), "Refreshing must never create an entry the user did not ask for.");
+        }
+        finally { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(testRoot, throwOnMissingSubKey: false); }
+        results.Add("시작 프로그램: 임시 키에서 등록·경로 갱신·해제, 개발용 실행 파일 거부, 요청 없는 등록 없음 통과");
+
+        // A record remembers the file that follows its edits across restarts.
+        var followDirectory = Path.Combine(directory, "follow");
+        var followStore = new HistoryStore(true, followDirectory);
+        var followedEntry = followStore.RecordCapture(DateTimeOffset.Now, "따라가기 검사", "sample", "Region", 8, 8);
+        var followedFile = Path.Combine(directory, "follow-export.png");
+        Assert(followStore.AttachFollowedFile(followedEntry.Id, followedFile) && new HistoryStore(true, followDirectory).Find(followedEntry.Id)?.FollowedPath == Path.GetFullPath(followedFile)
+            && string.IsNullOrEmpty(followStore.Find(followedEntry.Id)!.Path), "The followed file was not stored apart from a manual export.");
+        results.Add("바로 저장 파일: 기록에 따라갈 파일 경로를 직접 저장한 파일과 따로 보관 통과");
+
         HistoryTests(directory, results);
 
         var first = Frame(160, 200, 0);

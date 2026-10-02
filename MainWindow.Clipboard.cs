@@ -38,6 +38,8 @@ internal sealed partial class MainWindow
     }
     private void SyncClipboard()
     {
+        // Text being typed in place is not in the image yet; the next tick writes it once it is.
+        if (document?.Hidden != null) return;
         clipboardSyncTimer.Stop();
         try { captureClipboard.Update(document); }
         catch (Exception) { Notify("클립보드를 편집 결과로 바꾸지 못했습니다. 복사를 다시 누르세요."); }

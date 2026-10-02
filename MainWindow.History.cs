@@ -95,6 +95,8 @@ internal sealed partial class MainWindow
     {
         historySaveTimer.Stop();
         if (currentHistoryId is not Guid id || document == null || !AutoPreservesCurrent) return;
+        // Text being typed in place is not in the image yet; committing or dropping it schedules this again.
+        if (document.Hidden != null) return;
         if (queuedDocuments.TryGetValue(id, out var queued) && IsCurrentRevision(queued)) return;
         // Only composed pixels reach disk; live editing documents remain in the bounded session cache.
         var image = document.Render();
@@ -127,6 +129,7 @@ internal sealed partial class MainWindow
             if (image == null && File.Exists(latest.ImagePath)) image = ImageFiles.Load(latest.ImagePath);
             if (image == null) { Notify("이미지가 없는 기록입니다."); return; }
             SetImage(image); currentHistoryId = entry.Id;
+            ResumeFollowing(latest);
             documentName = entry.IsClipboard ? "복사 이미지 " + CaptureTime(entry).ToString("MM.dd HH:mm:ss") : entry.CapturedAt != null ? "캡처 " + CaptureTime(entry).ToString("MM.dd HH:mm:ss") : entry.Name;
             flattenedHistory.Add(entry.Id);
             savedDocuments[entry.Id] = (new WeakReference<ImageDocument>(document!), document!.Revision);

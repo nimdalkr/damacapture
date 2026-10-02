@@ -120,6 +120,7 @@ internal sealed partial class MainWindow
                 // Only step back over the masks if nothing else was edited since.
                 if (!ReferenceEquals(document, target) || target.Revision != revision) return;
                 for (var i = 0; i < masked.Length && target.CanUndo; i++) target.Undo();
+                Notify("되돌렸습니다");
                 findings.AddRange(masked); surface.Hints = findings.Select(finding => (finding.Bounds, finding.Label)).ToArray(); surface.RevealHints(); UpdateSensitiveCard();
                 dirty = true; surface.SelectedId = null; RefreshEditor();
             });

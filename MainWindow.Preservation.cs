@@ -19,6 +19,8 @@ internal sealed partial class MainWindow
 
     private void RememberCurrentDocument()
     {
+        // The document is about to be put aside: a file that follows it gets its last change first.
+        FlushAutoSave();
         if (currentHistoryId is Guid id && document != null && FindHistory(id) != null)
             sessionDocuments.Store(id, document, documentName, dirty);
     }

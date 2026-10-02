@@ -135,7 +135,7 @@ internal sealed class SelectionOverlay : Forms.Form
             Complete();
             return;
         }
-        _dragging = true;
+        _dragging = true; _moving = false;
         Capture = true;
         _origin = _pointer;
         _selection = Rectangle.Empty;
@@ -148,6 +148,11 @@ internal sealed class SelectionOverlay : Forms.Form
     {
         base.OnMouseMove(e);
         _pointer = Clamp(e.Location);
+        // Space held during a drag: the rectangle keeps its size and follows the pointer, stopping at the desktop edges.
+        if (_dragging && _moving && _mode != CaptureMode.Freehand)
+            _origin = new Point(
+                Math.Clamp(_pointer.X - _moveSize.Width, Math.Max(0, -_moveSize.Width), Math.Min(_desktopBounds.Width, _desktopBounds.Width - _moveSize.Width)),
+                Math.Clamp(_pointer.Y - _moveSize.Height, Math.Max(0, -_moveSize.Height), Math.Min(_desktopBounds.Height, _desktopBounds.Height - _moveSize.Height)));
         if (_dragging)
         {
             if (_mode == CaptureMode.Freehand)
@@ -157,8 +162,7 @@ internal sealed class SelectionOverlay : Forms.Form
                     _polygon.Add(_pointer);
                 _selection = PolygonBounds();
             }
-            else _selection = Rectangle.FromLTRB(Math.Min(_origin.X, _pointer.X), Math.Min(_origin.Y, _pointer.Y),
-                Math.Max(_origin.X, _pointer.X), Math.Max(_origin.Y, _pointer.Y));
+            else _selection = Spanned(_origin, Corner());
         }
         else UpdateHover();
         InvalidateDynamic();
@@ -175,18 +179,54 @@ internal sealed class SelectionOverlay : Forms.Form
             if (_polygon.Count == 0 || _polygon[^1] != _pointer) _polygon.Add(_pointer);
             _selection = PolygonBounds();
         }
-        else _selection = Rectangle.FromLTRB(Math.Min(_origin.X, _pointer.X), Math.Min(_origin.Y, _pointer.Y),
-            Math.Max(_origin.X, _pointer.X), Math.Max(_origin.Y, _pointer.Y));
+        else _selection = Spanned(_origin, Corner());
+        _moving = false;
         _dragging = false;
         Capture = false;
         Complete();
     }
 
+    private bool _moving;
+    /// <summary>The rectangle's signed size, kept while Space moves it.</summary>
+    private Size _moveSize;
+    private Point Corner() => _moving ? new Point(_origin.X + _moveSize.Width, _origin.Y + _moveSize.Height) : _pointer;
+    private static Rectangle Spanned(Point a, Point b) => Rectangle.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+
     protected override void OnKeyDown(Forms.KeyEventArgs e)
     {
         if (e.KeyCode == Forms.Keys.Escape) { e.Handled = true; Cancel(); }
         else if (e.KeyCode == Forms.Keys.Enter) { e.Handled = true; Complete(); }
+        else if (e.KeyCode == Forms.Keys.Space)
+        {
+            e.Handled = true; e.SuppressKeyPress = true;
+            // Key repeat arrives while held; only the first press fixes the size.
+            if (_dragging && !_moving && _mode != CaptureMode.Freehand) { _moveSize = new Size(_pointer.X - _origin.X, _pointer.Y - _origin.Y); _moving = true; }
+        }
+        else if (e.KeyCode is Forms.Keys.Left or Forms.Keys.Right or Forms.Keys.Up or Forms.Keys.Down)
+        {
+            // The pointer itself moves, a pixel at a time (ten with Shift), so the edge under it lands exactly.
+            e.Handled = true;
+            var step = e.Shift ? 10 : 1;
+            var position = Forms.Cursor.Position;
+            position.Offset(e.KeyCode == Forms.Keys.Left ? -step : e.KeyCode == Forms.Keys.Right ? step : 0, e.KeyCode == Forms.Keys.Up ? -step : e.KeyCode == Forms.Keys.Down ? step : 0);
+            Forms.Cursor.Position = position;
+        }
         base.OnKeyDown(e);
+    }
+
+    protected override void OnKeyUp(Forms.KeyEventArgs e)
+    {
+        if (e.KeyCode == Forms.Keys.Space)
+        {
+            e.Handled = true;
+            if (_moving)
+            {
+                // Sizing resumes from the corner where the rectangle now is, not from wherever the pointer overshot to.
+                var corner = Corner(); _moving = false;
+                if (corner != _pointer) Forms.Cursor.Position = PointToScreen(corner);
+            }
+        }
+        base.OnKeyUp(e);
     }
 
     private Point Clamp(Point point) => new(Math.Clamp(point.X, 0, _desktopBounds.Width),
@@ -309,7 +349,7 @@ internal sealed class SelectionOverlay : Forms.Form
             CaptureMode.Element => "창의 구성 요소를 가리키고 클릭 · 직접 그린 UI는 창 단위로 선택",
             CaptureMode.FixedSize => $"{_fixedSize.Width} × {_fixedSize.Height} 영역을 배치하고 클릭",
             CaptureMode.Freehand => "마우스를 누른 채 자유롭게 둘러 그리기",
-            _ => "마우스를 드래그해 캡처 영역 선택"
+            _ => "드래그해 캡처 영역 선택 · Space 누른 채 이동 · 방향키 1px"
         };
         var text = $"{verb}     ESC 취소";
         var screen = Forms.Screen.FromPoint(Forms.Cursor.Position).Bounds;

@@ -16,7 +16,6 @@ internal sealed class EditorSurface : FrameworkElement
     public Color Ink { get; set; } = Color.FromRgb(238, 32, 46);
     public int Strength { get; set; } = 18;
     public double Stroke { get; set; } = 4;
-    public string AnnotationText { get; set; } = "여기를 확인하세요";
     public string Font { get; set; } = "Malgun Gothic";
     public bool Bold { get; set; }
     /// <summary>New rectangles and ellipses are filled with the ink color.</summary>
@@ -50,6 +49,10 @@ internal sealed class EditorSurface : FrameworkElement
     public event Action<Rect>? CropRequested;
     /// <summary>Text extraction region in image pixels; the whole image on a double click.</summary>
     public event Action<Rect>? ExtractRequested;
+    /// <summary>Text is typed in place: the point clicked in image pixels, and the text annotation there if one was hit.</summary>
+    public event Action<Point, EditOperation?>? TextEditRequested;
+    /// <summary>Raised before a pending edit is committed or dropped, so an in-place text editor can follow.</summary>
+    public event Action? CommitRequested, CancelRequested;
     private BitmapSource? rendered;
     private bool dragging;
     private Point start, last;
@@ -198,7 +201,14 @@ internal sealed class EditorSurface : FrameworkElement
     {
         if (Document == null) return;
         if (Tool == "Extract" && e.ClickCount == 2) { CancelPendingEdit(); ExtractRequested?.Invoke(new Rect(0, 0, Width, Height)); e.Handled = true; return; }
+        CommitRequested?.Invoke();
         Focus(); start = last = Position(e); points.Clear(); points.Add(start); moving = null; preview = null; resizing = false; activeTool = Tool;
+        if (activeTool == "Text" || (activeTool == "Select" && e.ClickCount == 2))
+        {
+            // Clicking existing text edits it; with the text tool, anywhere else starts new text there.
+            var text = Document.Operations.Reverse().FirstOrDefault(x => x.Kind == EditKind.Text && VisibleBounds(x).Contains(start));
+            if (text != null || activeTool == "Text") { SelectedId = text?.Id; SelectionChanged?.Invoke(); InvalidateVisual(); TextEditRequested?.Invoke(start, text); e.Handled = true; return; }
+        }
         if (activeTool is "Select" or "Mosaic" or "Blur" or "Solid")
         {
             var edits = Document.Operations.Reverse().ToArray();
@@ -213,19 +223,13 @@ internal sealed class EditorSurface : FrameworkElement
             }
             else { SelectedId = null; SelectionChanged?.Invoke(); if (activeTool == "Select") { InvalidateVisual(); return; } }
         }
-        if (activeTool == "Text" || activeTool == "Number")
+        if (activeTool == "Number")
         {
-            if (activeTool == "Text" && string.IsNullOrWhiteSpace(AnnotationText)) return;
-            if (activeTool == "Number")
-            {
-                var radius = Math.Max(13, Stroke * 3.5);
-                start = new Point(Width <= radius * 2 ? Width / 2 : Math.Clamp(start.X, radius, Width - radius), Height <= radius * 2 ? Height / 2 : Math.Clamp(start.Y, radius, Height - radius));
-            }
+            var radius = Math.Max(13, Stroke * 3.5);
+            start = new Point(Width <= radius * 2 ? Width / 2 : Math.Clamp(start.X, radius, Width - radius), Height <= radius * 2 ? Height / 2 : Math.Clamp(start.Y, radius, Height - radius));
             // The next number follows the largest one still present, so deleting a badge never repeats a value.
             var nextNumber = Document.Operations.Where(x => x.Kind == EditKind.Number).Select(x => int.TryParse(x.Text, out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
-            var extent = activeTool == "Text" ? ImageDocument.MeasureText(AnnotationText, Stroke, Font, Bold) : new Size(40, 40);
-            var op = new EditOperation { Kind = Enum.Parse<EditKind>(activeTool), Bounds = new Rect(start.X, start.Y, Math.Max(1, Math.Min(Width - start.X, extent.Width)), Math.Max(1, Math.Min(Height - start.Y, extent.Height))), Color = Ink, Stroke = Stroke,
-                Text = activeTool == "Number" ? nextNumber.ToString() : AnnotationText, Font = activeTool == "Text" ? Font : "", Bold = activeTool == "Text" && Bold };
+            var op = new EditOperation { Kind = EditKind.Number, Bounds = new Rect(start.X, start.Y, Math.Max(1, Math.Min(Width - start.X, 40)), Math.Max(1, Math.Min(Height - start.Y, 40))), Color = Ink, Stroke = Stroke, Text = nextNumber.ToString() };
             Document.Add(op); SelectedId = op.Id; Refresh(); Changed?.Invoke(); return;
         }
         dragging = true; CaptureMouse(); e.Handled = true; InvalidateVisual(); DrawPreview();
@@ -267,6 +271,7 @@ internal sealed class EditorSurface : FrameworkElement
     /// <summary>Commit pointer geometry before any export, including keyboard save during a drag.</summary>
     public void CompletePendingEdit()
     {
+        CommitRequested?.Invoke();
         if (!dragging || Document == null) return;
         UpdatePreview(); dragging = false; ReleaseMouseCapture();
         var changed = false;
@@ -300,6 +305,7 @@ internal sealed class EditorSurface : FrameworkElement
     }
     public void CancelPendingEdit()
     {
+        CancelRequested?.Invoke();
         dragging = false; moving = preview = null; points.Clear();
         if (IsMouseCaptured) ReleaseMouseCapture();
         InvalidateVisual(); DrawPreview();
