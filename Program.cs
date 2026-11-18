@@ -7,6 +7,10 @@ using System.Windows;
 using DamaCapture.Services;
 using DamaCapture.Tests;
 
+// Every P/Invoke in this app targets a Windows system library, so they are only ever loaded from System32,
+// never from the folder the app happens to run in.
+[assembly: System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+
 namespace DamaCapture;
 
 internal static class Program
@@ -46,6 +50,8 @@ internal static class Program
         }
         using var showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + ".Show");
         var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+        // The palette is fixed for the life of the process; a preview window can be asked for the dark one.
+        Ui.ApplyTheme(demo ? args.Contains("--dark") : Ui.WantsDark(new SettingsStore().Load().Theme));
         Ui.Install(app);
         app.DispatcherUnhandledException += (_, e) =>
         {

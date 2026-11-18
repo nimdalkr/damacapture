@@ -78,7 +78,7 @@ internal sealed partial class MainWindow
         var dismiss = Ui.Button("아니요", ClearFindings); Ui.SetGhost(dismiss, false, false); dismiss.Height = 30; dismiss.Padding = new Thickness(10, 0, 10, 0); row.Children.Add(dismiss);
         sensitiveCard = new Border
         {
-            Child = row, Background = Ui.Panel, BorderBrush = Ui.Brush("#DAD5CE"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10),
+            Child = row, Background = Ui.Panel, BorderBrush = Ui.Edge, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10),
             Padding = new Thickness(14, 8, 8, 8), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 16, 0, 0), Visibility = Visibility.Collapsed
         };
@@ -90,7 +90,8 @@ internal sealed partial class MainWindow
     private void UpdateSensitiveCard()
     {
         if (sensitiveCard == null || sensitiveText == null) return;
-        if (findings.Count == 0) { sensitiveCard.Visibility = Visibility.Collapsed; return; }
+        // While read text is laid over the image its bar takes this place.
+        if (findings.Count == 0 || reading != null) { sensitiveCard.Visibility = Visibility.Collapsed; return; }
         var summary = string.Join(", ", findings.GroupBy(finding => finding.Kind).Select(group => $"{group.First().Label} {group.Count()}곳"));
         sensitiveText.Text = summary + "을 찾았습니다";
         var wasVisible = sensitiveCard.Visibility == Visibility.Visible;

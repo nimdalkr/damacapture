@@ -416,6 +416,7 @@ public sealed class ImageDocument
             case EditKind.Text:
                 drawing.DrawText(AnnotationText(operation.Text, operation.Stroke, operation.Font, operation.Bold, brush), bounds.TopLeft);
                 break;
+            case EditKind.Measure: DrawMeasure(drawing, start, end, operation.Stroke, operation.Color); break;
             case EditKind.Number:
                 var radius = Math.Max(13, operation.Stroke * 3.5);
                 var center = bounds.TopLeft;
@@ -424,6 +425,32 @@ public sealed class ImageDocument
                 drawing.DrawText(text, new Point(center.X - text.Width / 2, center.Y - text.Height / 2));
                 break;
         }
+    }
+
+    /// <summary>The distance between two points in image pixels, as the dimension label shows it.</summary>
+    public static string MeasureLabel(Point start, Point end) => $"{Math.Round((end - start).Length):N0} px";
+
+    /// <summary>A dimension line: the span with end ticks and its length in pixels on a tag in the same color.</summary>
+    public static void DrawMeasure(DrawingContext drawing, Point start, Point end, double stroke, Color color)
+    {
+        var brush = new SolidColorBrush(color); brush.Freeze();
+        var width = Math.Max(1.5, stroke * 0.6);
+        var pen = new Pen(brush, width) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
+        drawing.DrawLine(pen, start, end);
+        var along = end - start;
+        if (along.Length < 0.5) return;
+        along.Normalize();
+        var across = new Vector(-along.Y, along.X);
+        var tick = Math.Max(6, stroke * 2.2);
+        drawing.DrawLine(pen, start - across * tick, start + across * tick);
+        drawing.DrawLine(pen, end - across * tick, end + across * tick);
+        // Light ink gets dark letters and dark ink light ones, so the length stays readable on any color.
+        var light = color.R * 0.299 + color.G * 0.587 + color.B * 0.114 > 160;
+        var label = Text(MeasureLabel(start, end), Math.Max(12, stroke * 1.6 + 10), light ? Brushes.Black : Brushes.White);
+        var middle = start + (end - start) / 2;
+        var tag = new Rect(middle.X - label.Width / 2 - 5, middle.Y - label.Height / 2 - 2, label.Width + 10, label.Height + 4);
+        drawing.DrawRoundedRectangle(brush, null, tag, 3, 3);
+        drawing.DrawText(label, new Point(tag.X + 5, tag.Y + 2));
     }
 
     private static FormattedText Text(string text, double size, Brush brush) => new(text, CultureInfo.CurrentUICulture,

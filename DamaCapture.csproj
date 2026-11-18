@@ -12,11 +12,73 @@
     <RootNamespace>DamaCapture</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\dama.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>담아</Product>
     <Description>화면 캡처 · 이미지 편집기</Description>
     <Company>FOT</Company>
     <Copyright>Copyright (C) 2026 FOT</Copyright>  </PropertyGroup>
+  <!--
+    Release size. Only the Korean UI resources ship, and the Windows SDK projection (25 MB, used for OCR and face
+    detection) is trimmed to the types the app calls. Every other assembly is copied whole and the runtime keeps the
+    settings an untrimmed build has, so WPF and Windows Forms behave exactly as before. Trimming the rest was tried:
+    WPF lost COM types it loads by reflection and the window closed on start.
+  -->
+  <PropertyGroup>
+    <SatelliteResourceLanguages>ko</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(SelfContained)' == 'true' and '$(RuntimeIdentifier)' != ''">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <_SuppressWpfTrimError>true</_SuppressWpfTrimError>
+    <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
+    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
+  </PropertyGroup>
+  <Target Name="TrimOnlyWindowsSdkProjection" AfterTargets="_ComputeManagedAssemblyToLink" BeforeTargets="PrepareForILLink" Condition="'$(PublishTrimmed)' == 'true'">
+    <ItemGroup>
+      <ManagedAssemblyToLink Condition="'%(Filename)' != 'Microsoft.Windows.SDK.NET'">
+        <TrimMode>copy</TrimMode>
+        <IsTrimmable>false</IsTrimmable>
+      </ManagedAssemblyToLink>
+      <ManagedAssemblyToLink Condition="'%(Filename)' == 'Microsoft.Windows.SDK.NET'">
+        <TrimMode>link</TrimMode>
+        <IsTrimmable>true</IsTrimmable>
+      </ManagedAssemblyToLink>
+    </ItemGroup>
+  </Target>
+  <!-- Trimming switches these off by default; none of the assemblies they guard are trimmed, so they stay as they were. -->
+  <Target Name="KeepUntrimmedRuntimeSettings" BeforeTargets="_GenerateRuntimeConfigurationFilesInputCache;GenerateBuildRuntimeConfigurationFiles;PrepareForILLink" Condition="'$(PublishTrimmed)' == 'true'">
+    <ItemGroup>
+      <RuntimeHostConfigurationOption Remove="Microsoft.Extensions.DependencyInjection.VerifyOpenGenericServiceTrimmability"/>
+      <RuntimeHostConfigurationOption Remove="System.AggressiveAttributeTrimming"/>
+      <RuntimeHostConfigurationOption Remove="System.ComponentModel.DefaultValueAttribute.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.ComponentModel.Design.IDesignerHost.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.ComponentModel.TypeConverter.EnableUnsafeBinaryFormatterInDesigntimeLicenseContextSerialization"/>
+      <RuntimeHostConfigurationOption Remove="System.ComponentModel.TypeDescriptor.IsComObjectDescriptorSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Data.DataSet.XmlSerializationIsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Diagnostics.Debugger.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Diagnostics.Tracing.EventSource.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Drawing.Design.UITypeEditor.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Net.SocketsHttpHandler.Http3Support"/>
+      <RuntimeHostConfigurationOption Remove="System.Resources.ResourceManager.AllowCustomResourceTypes"/>
+      <RuntimeHostConfigurationOption Remove="System.Resources.UseSystemResourceKeys"/>
+      <RuntimeHostConfigurationOption Remove="System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Runtime.InteropServices.BuiltInComInterop.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Runtime.InteropServices.EnableConsumingManagedCodeFromNativeHosting"/>
+      <RuntimeHostConfigurationOption Remove="System.Runtime.InteropServices.EnableCppCLIHostActivation"/>
+      <RuntimeHostConfigurationOption Remove="System.Runtime.InteropServices.Marshalling.EnableGeneratedComInterfaceComImportInterop"/>
+      <RuntimeHostConfigurationOption Remove="System.StartupHookProvider.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Text.Encoding.EnableUnsafeUTF7Encoding"/>
+      <RuntimeHostConfigurationOption Remove="System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault"/>
+      <RuntimeHostConfigurationOption Remove="System.Threading.Thread.EnableAutoreleasePool"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.ActiveXImpl.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.Binding.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.Control.AreDesignTimeFeaturesSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.Control.UseComponentModelRegisteredTypes"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.ImageIndexConverter.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.MdiWindowDialog.IsSupported"/>
+      <RuntimeHostConfigurationOption Remove="System.Windows.Forms.Primitives.TypeConverterHelper.UseComponentModelRegisteredTypes"/>
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <!-- QR decoding on this PC (Apache-2.0); the only package the app references. -->
     <PackageReference Include="ZXing.Net" Version="0.16.11"/>

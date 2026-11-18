@@ -85,6 +85,35 @@ internal sealed partial class MainWindow
         general.Children.Add(archiveClipboard);
         var clipboardHelp = Ui.Label("켜둔 동안 복사한 텍스트·이미지·파일 목록을 그대로 기록합니다(비밀번호 포함).", 12, Ui.Muted);
         clipboardHelp.Margin = new Thickness(26, 0, 0, 0); clipboardHelp.LineHeight = 19; general.Children.Add(clipboardHelp);
+        // Apps whose copies never reach the history: a banking app, a company messenger, a password field the app does not mark.
+        var excluded = new List<string>(settings.ClipboardExcludedApps);
+        var excludedPanel = new WrapPanel { Margin = new Thickness(26, 8, 0, 0) };
+        void RenderExcluded()
+        {
+            excludedPanel.Children.Clear();
+            foreach (var app in excluded)
+            {
+                var chip = new StackPanel { Orientation = Orientation.Horizontal };
+                chip.Children.Add(Ui.Label(app, 12));
+                var remove = Ui.IconButton(app + " 다시 기록", "close", () => { excluded.Remove(app); RenderExcluded(); }, compact: true);
+                remove.Width = 20; remove.Height = 20; remove.MinHeight = 20; remove.Padding = new Thickness(4); remove.Margin = new Thickness(4, 0, -4, 0);
+                chip.Children.Add(remove);
+                excludedPanel.Children.Add(new Border { Child = chip, Background = Ui.Track, CornerRadius = new CornerRadius(6), Padding = new Thickness(9, 3, 6, 3), Margin = new Thickness(0, 0, 6, 6) });
+            }
+            var add = Ui.Button("기록하지 않을 앱 추가…", () => { });
+            add.Height = 26; add.MinHeight = 26; add.Padding = new Thickness(10, 0, 10, 0); add.Margin = new Thickness(0, 0, 0, 6);
+            add.Click += (_, _) =>
+            {
+                var menu = NewMenu();
+                var candidates = ClipboardExclusionCandidates().Where(app => !excluded.Contains(app, StringComparer.OrdinalIgnoreCase)).ToArray();
+                if (candidates.Length == 0) menu.Items.Add(new MenuItem { Header = "추가할 앱이 없습니다", IsEnabled = false });
+                foreach (var app in candidates) menu.Items.Add(MenuAction(app, () => { excluded.Add(app); RenderExcluded(); }));
+                OpenMenu(add, menu);
+            };
+            excludedPanel.Children.Add(add);
+        }
+        RenderExcluded();
+        general.Children.Add(excludedPanel);
         // Automatic cleanup is off unless chosen; the choices keep any value an edited settings file may hold.
         var retentionDays = new[] { 0, 7, 30, 90, 180, 365, settings.HistoryRetentionDays }.Distinct().Order().ToArray();
         var retentionDayChoice = Ui.Choice(retentionDays.Select(days => days == 0 ? "끄기" : days == 365 ? "1년" : days + "일").ToArray(), Array.IndexOf(retentionDays, settings.HistoryRetentionDays));
@@ -110,6 +139,16 @@ internal sealed partial class MainWindow
         cleanup.HorizontalAlignment = HorizontalAlignment.Left; cleanup.Margin = new Thickness(0, 8, 0, 0); cleanup.Height = 30; cleanup.Padding = new Thickness(10, 0, 10, 0);
         general.Children.Add(cleanup);
         general.Children.Add(Ui.Section("화면"));
+        var themeValues = new[] { "light", "dark", "system" };
+        var theme = Ui.Choice(new[] { "밝게", "어둡게", "Windows 설정 따르기" }, Math.Max(0, Array.IndexOf(themeValues, settings.Theme)));
+        theme.Width = 174; theme.HorizontalAlignment = HorizontalAlignment.Left;
+        var themeRow = new StackPanel { Orientation = Orientation.Horizontal };
+        themeRow.Children.Add(theme);
+        // Colors are set when the app starts, so a change is only promised for the next start.
+        var themeNote = Ui.Label("다시 시작하면 적용됩니다", 12, Ui.Muted); themeNote.Margin = new Thickness(10, 0, 0, 0); themeNote.Visibility = Visibility.Collapsed;
+        themeRow.Children.Add(themeNote);
+        theme.SelectionChanged += (_, _) => themeNote.Visibility = themeValues[Math.Max(0, theme.SelectedIndex)] == settings.Theme ? Visibility.Collapsed : Visibility.Visible;
+        var themeLine = Row("테마", themeRow); themeLine.Margin = new Thickness(0, 4, 0, 8); general.Children.Add(themeLine);
         var reduceMotion = Check("모션 줄이기", settings.ReduceMotion);
         general.Children.Add(reduceMotion);
 
@@ -186,6 +225,12 @@ internal sealed partial class MainWindow
         var regionKey = HotkeyRow("영역 캡처", settings.RegionModifiers, settings.RegionHotkey);
         var windowKey = HotkeyRow("창 캡처", settings.WindowModifiers, settings.WindowHotkey);
         var scrollKey = HotkeyRow("스크롤 캡처", settings.ScrollModifiers, settings.ScrollHotkey);
+        var lastRegionKey = HotkeyRow("이전 영역 캡처", settings.LastRegionModifiers, settings.LastRegionHotkey);
+        var textKey = HotkeyRow("글자 캡처", settings.TextModifiers, settings.TextHotkey);
+        var fullScreenPause = Check("전체 화면 앱 실행 중 단축키 끄기", settings.PauseHotkeysInFullScreen);
+        fullScreenPause.Margin = new Thickness(0, 0, 0, 2); hotkeyTab.Children.Add(fullScreenPause);
+        var fullScreenHelp = Ui.Label("게임·영상·발표가 화면을 채우는 동안 단축키를 그 앱에 넘깁니다.", 12, Ui.Muted);
+        fullScreenHelp.Margin = new Thickness(26, 0, 0, 14); fullScreenHelp.LineHeight = 19; hotkeyTab.Children.Add(fullScreenHelp);
         var hotkeyHelp = Ui.Label("글자·숫자 키는 조합 키를 두 개 이상 함께 써야 합니다. F1~F12와 PrtSc는 조합 키 하나로도, 없이도 쓸 수 있습니다. PrtSc가 등록되지 않으면 Windows 설정 → 접근성 → 키보드의 ‘Print Screen 키로 화면 캡처 열기’를 꺼 보세요.", 12, Ui.Muted);
         hotkeyHelp.LineHeight = 19; hotkeyHelp.Margin = new Thickness(0, 4, 0, 0); hotkeyTab.Children.Add(hotkeyHelp);
 
@@ -202,7 +247,7 @@ internal sealed partial class MainWindow
         productRow.Children.Add(new Border
         {
             Background = Ui.Red, Padding = new Thickness(7, 1, 7, 2), Margin = new Thickness(10, 5, 0, 0), VerticalAlignment = VerticalAlignment.Center,
-            Child = Ui.Label($"{version?.Major}.{version?.Minor}.{version?.Build}", 12, Ui.OnPrimary, FontWeights.SemiBold)
+            Child = Ui.Label($"{version?.Major}.{version?.Minor}.{version?.Build}", 12, Ui.TipText, FontWeights.SemiBold)
         });
         heroText.Children.Add(productRow);
         var descriptor = Ui.Label("화면 캡처 · 이미지 편집기", 12, Ui.Muted); descriptor.Margin = new Thickness(1, 3, 0, 0); heroText.Children.Add(descriptor);
@@ -273,15 +318,17 @@ internal sealed partial class MainWindow
                 Error("올바른 폴더 경로를 입력하세요.", 2, folder); return;
             }
             (uint Modifiers, uint Key) Chosen((ComboBox Modifiers, ComboBox Key) row) => (modifierValues[Math.Max(0, row.Modifiers.SelectedIndex)], VirtualKey((string)row.Key.SelectedItem));
-            var r = Chosen(regionKey); var w = Chosen(windowKey); var s = Chosen(scrollKey);
-            foreach (var (combination, row) in new[] { (r, regionKey), (w, windowKey), (s, scrollKey) })
+            var r = Chosen(regionKey); var w = Chosen(windowKey); var s = Chosen(scrollKey); var l = Chosen(lastRegionKey); var t = Chosen(textKey);
+            var hotkeyRows = new[] { (r, regionKey), (w, windowKey), (s, scrollKey), (l, lastRegionKey), (t, textKey) };
+            foreach (var (combination, row) in hotkeyRows)
             {
                 if (AppSettings.ValidHotkey(combination.Modifiers, combination.Key)) continue;
                 Error("글자·숫자 키는 조합 키를 두 개 이상 함께 써야 합니다.\nF1~F12와 PrtSc는 조합 키 하나로도, 없이도 쓸 수 있습니다.", 3, row.Modifiers); return;
             }
-            if (new[] { r, w, s }.Distinct().Count() != 3)
+            if (hotkeyRows.Select(entry => entry.Item1).Distinct().Count() != hotkeyRows.Length)
             {
-                Error("영역·창·스크롤 캡처에 서로 다른 단축키를 지정하세요.", 3, r == w ? windowKey.Key : scrollKey.Key); return;
+                var repeated = hotkeyRows.Skip(1).First(entry => hotkeyRows.TakeWhile(other => other != entry).Any(other => other.Item1 == entry.Item1));
+                Error("캡처마다 서로 다른 단축키를 지정하세요.", 3, repeated.Item2.Key); return;
             }
 
             var previous = AppSettings.Validated(settings);
@@ -325,7 +372,12 @@ internal sealed partial class MainWindow
             candidate.SaveFormat = formatValues[Math.Max(0, format.SelectedIndex)];
             candidate.RegionHotkey = r.Key; candidate.WindowHotkey = w.Key; candidate.ScrollHotkey = s.Key;
             candidate.RegionModifiers = r.Modifiers; candidate.WindowModifiers = w.Modifiers; candidate.ScrollModifiers = s.Modifiers;
-            var keysChanged = (previous.RegionModifiers, previous.RegionHotkey) != r || (previous.WindowModifiers, previous.WindowHotkey) != w || (previous.ScrollModifiers, previous.ScrollHotkey) != s;
+            candidate.LastRegionHotkey = l.Key; candidate.LastRegionModifiers = l.Modifiers; candidate.TextHotkey = t.Key; candidate.TextModifiers = t.Modifiers;
+            candidate.PauseHotkeysInFullScreen = fullScreenPause.IsChecked == true;
+            candidate.ClipboardExcludedApps = excluded.ToArray();
+            candidate.Theme = themeValues[Math.Max(0, theme.SelectedIndex)];
+            var keysChanged = (previous.RegionModifiers, previous.RegionHotkey) != r || (previous.WindowModifiers, previous.WindowHotkey) != w || (previous.ScrollModifiers, previous.ScrollHotkey) != s
+                || (previous.LastRegionModifiers, previous.LastRegionHotkey) != l || (previous.TextModifiers, previous.TextHotkey) != t;
             var saved = false;
             dialog.IsEnabled = false;
             try
@@ -345,12 +397,17 @@ internal sealed partial class MainWindow
                         if (await historyWriter.DeleteAsync(entry.Id)) ForgetHistoryState(entry.Id);
                 }
                 CopySettings(candidate, settings);
-                if (keysChanged && !demo && !RegisterHotkeys())
+                // Only a combination the user just chose can be blamed; one that was already taken stays as it was.
+                var changedRows = new[] { (1, previous.RegionModifiers, previous.RegionHotkey, r, regionKey), (2, previous.WindowModifiers, previous.WindowHotkey, w, windowKey),
+                    (3, previous.ScrollModifiers, previous.ScrollHotkey, s, scrollKey), (4, previous.LastRegionModifiers, previous.LastRegionHotkey, l, lastRegionKey), (5, previous.TextModifiers, previous.TextHotkey, t, textKey) }
+                    .Where(row => (row.Item2, row.Item3) != row.Item4).ToArray();
+                var refused = keysChanged && !demo ? RegisterHotkeys().Intersect(changedRows.Select(row => row.Item1)).ToArray() : [];
+                if (refused.Length > 0)
                 {
                     CopySettings(previous, settings);
-                    var restored = RegisterHotkeys();
+                    var restored = RegisterHotkeys().Length == 0;
                     Error("다른 앱이나 Windows가 쓰고 있는 단축키가 있습니다. 조합을 바꿔주세요." +
-                        (restored ? "" : "\n이전 단축키도 등록하지 못했습니다. 사용 중인 앱을 확인하세요."), 3, regionKey.Key);
+                        (restored ? "" : "\n이전 단축키도 등록하지 못했습니다. 사용 중인 앱을 확인하세요."), 3, changedRows.First(row => row.Item1 == refused[0]).Item5.Key);
                     return;
                 }
                 settingsStore.Save(candidate); saved = true;
@@ -358,6 +415,7 @@ internal sealed partial class MainWindow
                 history.SetPersistence(candidate.KeepHistory);
                 if (history.LastError != null) throw new IOException(history.LastError);
                 Motion.ReduceMotion = candidate.ReduceMotion;
+                if (previous.PauseHotkeysInFullScreen != candidate.PauseHotkeysInFullScreen) ApplyFullScreenPause();
                 Notify("설정을 저장했습니다.");
                 dialog.DialogResult = true;
                 ScheduleHistoryTrim(announce: true);
@@ -368,7 +426,7 @@ internal sealed partial class MainWindow
                 var rollbackErrors = new List<string>();
                 if (keysChanged && !demo)
                 {
-                    try { if (!RegisterHotkeys()) rollbackErrors.Add("이전 단축키를 등록하지 못했습니다."); }
+                    try { if (RegisterHotkeys().Length > 0) rollbackErrors.Add("이전 단축키를 등록하지 못했습니다."); }
                     catch { rollbackErrors.Add("이전 단축키를 등록하지 못했습니다."); }
                 }
                 if (saved)
@@ -396,6 +454,29 @@ internal sealed partial class MainWindow
         RefreshCaptureOptions();
     }
 
+    /// <summary>Apps the user has copied from or captured in, and apps with a window open now.</summary>
+    private string[] ClipboardExclusionCandidates()
+    {
+        var own = Environment.ProcessPath is { } path ? Path.GetFileNameWithoutExtension(path) : "";
+        var seen = AllHistoryEntries.Select(entry => entry.ApplicationName);
+        // One pass over the open windows, then each owning process is named once.
+        var owners = new HashSet<uint>();
+        DamaCapture.Capture.NativeMethods.EnumWindows((hwnd, _) =>
+        {
+            if (DamaCapture.Capture.NativeMethods.IsWindowVisible(hwnd) && DamaCapture.Capture.NativeMethods.GetWindowTextLength(hwnd) > 0)
+            { DamaCapture.Capture.NativeMethods.GetWindowThreadProcessId(hwnd, out var owner); owners.Add(owner); }
+            return true;
+        }, IntPtr.Zero);
+        var running = new List<string>();
+        foreach (var owner in owners)
+        {
+            try { using var process = System.Diagnostics.Process.GetProcessById((int)owner); running.Add(process.ProcessName); }
+            catch (Exception) { }
+        }
+        return seen.Concat(running).Where(app => !string.IsNullOrWhiteSpace(app) && app != "알 수 없는 앱" && !string.Equals(app, own, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.CurrentCultureIgnoreCase).Take(40).ToArray();
+    }
+
     private static void CopySettings(AppSettings source, AppSettings target)
     {
         target.CloseToTray = source.CloseToTray; target.KeepHistory = source.KeepHistory;
@@ -409,6 +490,10 @@ internal sealed partial class MainWindow
         target.ScrollHotkey = source.ScrollHotkey; target.HotkeyModifiers = source.HotkeyModifiers;
         target.RegionModifiers = source.RegionModifiers; target.WindowModifiers = source.WindowModifiers; target.ScrollModifiers = source.ScrollModifiers;
         target.SaveFormat = source.SaveFormat; target.CustomInk = source.CustomInk;
+        target.LastRegionHotkey = source.LastRegionHotkey; target.LastRegionModifiers = source.LastRegionModifiers;
+        target.TextHotkey = source.TextHotkey; target.TextModifiers = source.TextModifiers;
+        target.LastRegion = source.LastRegion; target.PauseHotkeysInFullScreen = source.PauseHotkeysInFullScreen;
+        target.ClipboardExcludedApps = source.ClipboardExcludedApps; target.Theme = source.Theme;
     }
 
     private sealed class SettingsFolderOwner(IntPtr handle) : Forms.IWin32Window

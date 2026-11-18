@@ -308,6 +308,46 @@ public static class HistoryWindowTests
             }
             finally { settings.HistoryRetentionDays = retentionDays; settings.HistoryRetentionCount = retentionCount; }
 
+            // Read text laid over the image: a drag picks words in reading order, everything when nothing is picked,
+            // and any edit drops the overlay because the words would no longer line up.
+            var readDocument = Field<ImageDocument>("document");
+            var reading = new TextRecognition.Reading([
+                new TextRecognition.Line([new TextRecognition.Word("담당자", new Rect(10, 10, 40, 14)), new TextRecognition.Word("홍길동", new Rect(60, 10, 40, 14))]),
+                new TextRecognition.Line([new TextRecognition.Word("sample@example.com", new Rect(10, 40, 120, 14))])], "ko");
+            Invoke("ShowReading", reading, new Point(100, 200));
+            var readSurface = Field<EditorSurface>("surface");
+            string ReadText() => (string)typeof(MainWindow).GetMethod("ReadingText", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+            Assert(readSurface.Tool == "Read" && readSurface.IsReading && ReadText() == "담당자 홍길동" + Environment.NewLine + "sample@example.com", "Without a pick, all read text must be offered in reading order.");
+            readSurface.PickReading(new Point(175, 216), new Point(105, 247));
+            Assert(readSurface.ReadingSelection == (1, 2) && ReadText() == "홍길동" + Environment.NewLine + "sample@example.com", "A drag across the image did not pick the words between its ends, placed where they were read.");
+            readDocument.Add(new EditOperation { Kind = EditKind.Solid, Bounds = new Rect(5, 5, 20, 20) }); Invoke("RefreshEditor");
+            Assert(readSurface.Tool != "Read" && !readSurface.IsReading && Field<TextRecognition.Reading?>("reading") == null, "An edit must close the read text.");
+            readDocument.Undo(); Invoke("RefreshEditor");
+
+            // Dragging out hands over the composed image as a file plus pixels, and copied text as text.
+            var drag = (DataObject)typeof(MainWindow).GetMethod("HistoryDragData", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, [first])!;
+            var dropped = drag.GetFileDropList().Cast<string>().Single();
+            try
+            {
+                Assert(File.Exists(dropped) && Path.GetFileName(dropped).StartsWith("담아_", StringComparison.Ordinal) && drag.ContainsImage()
+                    && Pixels(ImageFiles.Load(dropped)).SequenceEqual(Pixels(Field<ImageDocument>("document").Render())), "A dragged capture must be the composed image, as a file and as pixels.");
+            }
+            finally { File.Delete(dropped); }
+            var dragText = (DataObject)typeof(MainWindow).GetMethod("HistoryDragData", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, [textEntry])!;
+            Assert(dragText.GetText() == textEntry.Text && !dragText.ContainsFileDropList(), "A dragged clipboard text record must hand over its text.");
+
+            // Copies from an app the user left out are not recorded at all.
+            settings.ArchiveClipboard = true; settings.ClipboardExcludedApps = ["은행 앱"];
+            try
+            {
+                var before = clipboardHistory.Entries.Count;
+                Invoke("ArchiveClipboardCapture", new ClipboardCapture(HistoryKind.ClipboardText, DateTimeOffset.Now, "이체", "은행 앱", "계좌 비밀번호 1234", [], null));
+                Assert(clipboardHistory.Entries.Count == before, "A copy from an excluded app was recorded.");
+                Invoke("ArchiveClipboardCapture", new ClipboardCapture(HistoryKind.ClipboardText, DateTimeOffset.Now, "메모", "메모장", "기록될 내용", [], null));
+                Assert(clipboardHistory.Entries.Count == before + 1, "A copy from another app was not recorded.");
+            }
+            finally { settings.ArchiveClipboard = false; settings.ClipboardExcludedApps = []; }
+
             // The first close is canceled while history flushes. Exit must be dispatched only
             // after this Closing event has returned; calling Show during Closing used to throw.
             window.Close();
@@ -326,7 +366,10 @@ public static class HistoryWindowTests
                 "기록 선택 삭제: 필터 기준 모두 선택·필터 변경 시 선택 정리·선택한 기록과 관리 이미지만 삭제 통과",
                 "기록 자동 정리: 기간 지난 기록만 삭제, 개수 상한에서 편집 중 기록 보호 통과",
                 "텍스트 바로 입력: 클릭한 자리에 입력·여러 줄, 놓은 글자 다시 편집, 취소 시 원래대로, 비우면 삭제 통과",
-                "폴더에 바로 저장: 캡처 즉시 저장, 편집을 따라 같은 파일 갱신, 사용자가 지운 파일은 다시 만들지 않음 통과", "창 종료: 실제 클립보드 접근 없는 격리된 예시 기록·두 이미지 저장 큐 처리 후 WPF 창 종료, 이중 Closing 완료·Dispatcher 예외 없음 통과"];
+                "폴더에 바로 저장: 캡처 즉시 저장, 편집을 따라 같은 파일 갱신, 사용자가 지운 파일은 다시 만들지 않음 통과",
+                "글자 겹쳐 보기: 고르지 않으면 전체, 드래그로 읽은 순서대로 골라 원래 자리 기준 좌표, 편집하면 닫힘 통과",
+                "끌어다 놓기: 캡처는 합성 결과 PNG 파일과 이미지로, 복사 텍스트는 텍스트로 넘김 통과",
+                "복사 기록 제외 앱: 제외한 앱의 복사는 기록하지 않고 다른 앱은 기록 통과", "창 종료: 실제 클립보드 접근 없는 격리된 예시 기록·두 이미지 저장 큐 처리 후 WPF 창 종료, 이중 Closing 완료·Dispatcher 예외 없음 통과"];
         }
         finally
         {

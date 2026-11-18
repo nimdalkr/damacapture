@@ -116,6 +116,8 @@ internal sealed partial class MainWindow
             RememberCurrentDocument();
             if (sessionDocuments.TryGet(entry.Id, out var session))
             {
+                // Words read from the image being left must not stay over the one being opened.
+                LeaveReading();
                 historySaveTimer.Stop(); currentHistoryId = entry.Id;
                 document = session.Document; documentName = session.Name; dirty = session.ExportDirty;
                 surface.SetDocument(document); editorPage = null; fitView = true;
@@ -518,10 +520,13 @@ internal sealed partial class MainWindow
                 if (WriterFor(entry.Id).IsFailed(entry.Id)) menu.Items.Add(MenuAction("다시 기록", async () => await WriterFor(entry.Id).FlushAsync()));
                 menu.Items.Add(new Separator());
                 if (!entry.IsClipboard) menu.Items.Add(MenuAction("숨기기", () => HideHistoryEntry(entry)));
+                if (entry.IsClipboard && entry.ApplicationName is { Length: > 0 } source && source != "알 수 없는 앱" && !settings.ExcludesFromClipboard(source))
+                    menu.Items.Add(MenuAction($"{source}의 복사 기록하지 않기", () => ExcludeFromClipboard(source)));
                 menu.Items.Add(MenuAction("삭제…", () => DeleteHistoryEntry(entry)));
                 return menu;
             }
             item.ContextMenu = EntryMenu();
+            MakeDragSource(item, () => HistoryDragData(entry));
             var container = new Grid();
             var more = MenuButton("기록 작업", "more", EntryMenu); more.VerticalAlignment = VerticalAlignment.Center; more.HorizontalAlignment = HorizontalAlignment.Right;
             more.Width = 26; more.Height = 28; more.Padding = new Thickness(5); more.Margin = new Thickness(0, 0, 4, 2); more.Foreground = Ui.Muted;

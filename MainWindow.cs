@@ -89,19 +89,22 @@ internal sealed partial class MainWindow : Window
         surface.RequestBringIntoView += (_, e) => e.Handled = true;
         surface.ExtractRequested += ExtractTextFrom;
         surface.TextEditRequested += BeginTextEdit; surface.CommitRequested += CommitTextEdit; surface.CancelRequested += CancelTextEdit;
+        surface.ReadingSelectionChanged += UpdateReadingBar;
         // Turning to the image folds any open QR bubble so it never covers what is being edited.
-        surface.PreviewMouseLeftButtonDown += (_, _) => CollapseCodes();
+        surface.PreviewMouseLeftButtonDown += (_, _) => { CollapseCodes(); if (surface.Blocked.Count > 0) surface.Blocked = []; };
         surface.CropRequested += bounds => { Try(() => { document?.Crop(bounds); surface.SelectedId = null; dirty = true; RefreshEditor(); Fit(); Toast("잘랐습니다", "되돌리기", Undo); }); };
         autoSaveTimer.Tick += (_, _) => { if (currentHistoryId is Guid id) WriteFollowedFile(id); else autoSaveTimer.Stop(); };
         Loaded += (_, _) => InitializeResident(clipboardDemo);
         Closing += OnClosing;
         if (Application.Current != null) Application.Current.SessionEnding += OnSessionEnding;
-        Closed += (_, _) => { FlushClipboardSync(); if (Application.Current != null) Application.Current.SessionEnding -= OnSessionEnding; historySearchTimer.Stop(); toastTimer.Stop(); countdownWindow?.Close(); clipboardMonitor?.Dispose(); hotkeys?.Dispose(); tray?.Dispose(); foreach (var window in pinWindows.ToArray()) window.Close(); };
+        Closed += (_, _) => { FlushClipboardSync(); if (Application.Current != null) Application.Current.SessionEnding -= OnSessionEnding; historySearchTimer.Stop(); toastTimer.Stop(); fullScreenTimer.Stop(); countdownWindow?.Close(); clipboardMonitor?.Dispose(); hotkeys?.Dispose(); tray?.Dispose(); foreach (var window in pinWindows.ToArray()) window.Close(); };
+        fullScreenTimer.Tick += (_, _) => CheckFullScreen();
+        if (settings.LastRegion is [var lastX, var lastY, var lastWidth, var lastHeight]) capture.LastRegion = new System.Drawing.Rectangle(lastX, lastY, lastWidth, lastHeight);
         PreviewKeyDown += KeyDownHandler;
         SizeChanged += (_, _) => { if (historyExpanded && detailsOpen && detailsColumn != null) detailsColumn.Width = new GridLength(HistoryPanelWidth); UpdateCompactLabels(); };
         AllowDrop = true;
-        DragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
-        Drop += (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) OpenFile(files[0]); };
+        DragOver += (_, e) => { e.Effects = !draggingOut && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
+        Drop += (_, e) => { if (!draggingOut && e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) OpenFile(files[0]); };
         ShowPage("home");
     }
     // Tray, hotkeys and clipboard collection start once, whether the window is shown or the app starts in the tray.
@@ -110,10 +113,10 @@ internal sealed partial class MainWindow : Window
     {
         if (residentReady) return;
         residentReady = true;
-        var dark = 0; DwmSetWindowAttribute(new WindowInteropHelper(this).EnsureHandle(), 20, ref dark, 4);
+        var dark = Ui.IsDark ? 1 : 0; DwmSetWindowAttribute(new WindowInteropHelper(this).EnsureHandle(), 20, ref dark, 4);
         if (!demo)
         {
-            SetupTray(); RegisterHotkeys(); ApplyClipboardSetting();
+            SetupTray(); RegisterHotkeys(); ApplyFullScreenPause(); ApplyClipboardSetting(); CleanDragFolder();
             // A copy run from a temporary folder (an unpacked download) must not take over the sign-in entry.
             var running = Environment.ProcessPath ?? "";
             if (!running.StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase))
@@ -138,6 +141,7 @@ internal sealed partial class MainWindow : Window
     private void SelectTool(string tool)
     {
         surface.CompletePendingEdit();
+        if (surface.Tool == "Read" && tool != "Read") ClearReading();
         if (surface.Tool == tool) return;
         surface.Tool = tool; surface.Cursor = tool == "Select" ? Cursors.Arrow : tool == "Text" ? Cursors.IBeam : Cursors.Cross;
         CollapseCodes(); UpdateCodeLayerVisibility();
@@ -163,13 +167,14 @@ internal sealed partial class MainWindow : Window
             "Select" => "편집을 선택해 이동하거나 크기를 조절하세요.",
             "Crop" => "남길 영역을 드래그하세요.",
             "Extract" => "추출할 영역을 드래그하세요 (더블클릭: 전체)",
+            "Read" => "드래그해서 고르세요. 더블클릭: 한 줄 · Ctrl+A: 전체",
             "Text" => "글자를 넣을 곳을 클릭해 바로 입력하세요. 놓은 글자는 다시 클릭하면 고칠 수 있습니다.",
             "Number" => "놓을 곳을 클릭하세요.",
             _ => "이미지 위에서 드래그하세요."
         };
         var selectedKind = document?.Operations.FirstOrDefault(x => x.Id == surface.SelectedId)?.Kind;
         maskProperties!.Visibility = tool is "Mosaic" or "Blur" || (tool == "Select" && selectedKind is EditKind.Mosaic or EditKind.Blur) ? Visibility.Visible : Visibility.Collapsed;
-        strokeProperties!.Visibility = tool is "Pen" or "Arrow" or "Rectangle" or "Ellipse" or "Line" or "Highlight" or "Text" or "Number" ? Visibility.Visible : Visibility.Collapsed;
+        strokeProperties!.Visibility = tool is "Pen" or "Arrow" or "Measure" or "Rectangle" or "Ellipse" or "Line" or "Highlight" or "Text" or "Number" ? Visibility.Visible : Visibility.Collapsed;
         textProperties!.Visibility = tool == "Text" ? Visibility.Visible : Visibility.Collapsed;
         if (fillProperties != null) fillProperties.Visibility = tool is "Rectangle" or "Ellipse" ? Visibility.Visible : Visibility.Collapsed;
         ShowStrokeAsSize(tool is "Text" or "Number");
@@ -191,6 +196,8 @@ internal sealed partial class MainWindow : Window
     private void RefreshEditor()
     {
         if (document == null) return;
+        // An undo or any edit moves the words; what was read no longer lines up.
+        if (reading != null && (!ReferenceEquals(document, readingDocument) || document.Revision != readingRevision)) LeaveReading();
         surface.Refresh();
         if (operations != null)
         {
@@ -217,7 +224,7 @@ internal sealed partial class MainWindow : Window
         updating = false;
         UpdateToolProperties(false);
     }
-    private static string KindName(EditKind kind) => kind switch { EditKind.Mosaic => "모자이크", EditKind.Blur => "블러", EditKind.Solid => "완전 가리기", EditKind.Pen => "펜", EditKind.Arrow => "화살표", EditKind.Rectangle => "사각형", EditKind.Ellipse => "원", EditKind.Line => "직선", EditKind.Text => "텍스트", EditKind.Number => "번호", _ => "형광펜" };
+    private static string KindName(EditKind kind) => kind switch { EditKind.Mosaic => "모자이크", EditKind.Blur => "블러", EditKind.Solid => "완전 가리기", EditKind.Pen => "펜", EditKind.Arrow => "화살표", EditKind.Rectangle => "사각형", EditKind.Ellipse => "원", EditKind.Line => "직선", EditKind.Text => "텍스트", EditKind.Number => "번호", EditKind.Measure => "치수", _ => "형광펜" };
     private void Fit()
     {
         if (document == null || canvasScroll == null || canvasScroll.ActualWidth < 50 || canvasScroll.ActualHeight < 50) return;
@@ -235,7 +242,7 @@ internal sealed partial class MainWindow : Window
     // The status line follows what just happened, so an undone action is not still announced as done.
     private void Undo() => Try(() => { surface.CancelPendingEdit(); if (document?.CanUndo != true) return; document.Undo(); surface.SelectedId = null; dirty = true; RefreshEditor(); if (fitView) Fit(); Notify("되돌렸습니다"); });
     private void Redo() => Try(() => { surface.CancelPendingEdit(); if (document?.CanRedo != true) return; document.Redo(); surface.SelectedId = null; dirty = true; RefreshEditor(); if (fitView) Fit(); Notify("다시 실행했습니다"); });
-    private void SetImage(BitmapSource image) { RememberCurrentDocument(); historySaveTimer.Stop(); FlushClipboardSync(); captureClipboard.Stop(); currentHistoryId = null; documentName = "캡처 이미지"; document = new ImageDocument(image); surface.SetDocument(document); surface.Tool = "Mosaic"; surface.Cursor = Cursors.Cross; if (!editorPageHasImage) editorPage = null; dirty = true; fitView = true; landPending = true; }
+    private void SetImage(BitmapSource image) { ClearReading(); RememberCurrentDocument(); historySaveTimer.Stop(); FlushClipboardSync(); captureClipboard.Stop(); currentHistoryId = null; documentName = "캡처 이미지"; document = new ImageDocument(image); surface.SetDocument(document); surface.Tool = "Mosaic"; surface.Cursor = Cursors.Cross; if (!editorPageHasImage) editorPage = null; dirty = true; fitView = true; landPending = true; }
     // An editor built around an image is reused for the next one; only the empty-state page has to be rebuilt.
     private bool editorPageHasImage;
     // A freshly arrived image settles onto the canvas instead of appearing in place.
@@ -262,7 +269,8 @@ internal sealed partial class MainWindow : Window
             await HideForCaptureAsync();
             var image = await capture.CaptureAsync(mode, settings.IncludeCursor, settings.DelaySeconds, fixedWidth, fixedHeight, ShowCountdownAsync);
             if (image == null) { if (wasVisible) RestoreWindow(activate: true); Notify("캡처를 취소했습니다."); return; }
-            SetImage(image); RecordCaptureHistory(capture.LastContext); ShowPage("editor", true); Notify("캡처 완료");
+            SetImage(image); RecordCaptureHistory(capture.LastContext); RememberLastRegion(); ShowPage("editor", true); Notify("캡처 완료");
+            ShowBlockedAreas(capture.LastProtected);
             FinishCapture(wasVisible);
         }
         catch (Exception ex) { RestoreWindow(activate: true); Notify("캡처 실패: " + ex.Message); }
@@ -301,7 +309,7 @@ internal sealed partial class MainWindow : Window
             if (first == null || capture.SelectedRegion is not System.Drawing.Rectangle bounds) return;
             var captureWindow = new ScrollCaptureWindow(first, bounds);
             if (!await captureWindow.RunAsync()) return;
-            SetImage(captureWindow.Result); RecordCaptureHistory(capture.LastContext is { } context ? context with { Mode = "Scroll" } : null); ShowPage("editor", true); Notify("스크롤 캡처 완료 · 연결 부분을 확인하세요.");
+            SetImage(captureWindow.Result); RecordCaptureHistory(capture.LastContext is { } context ? context with { Mode = "Scroll" } : null); RememberLastRegion(); ShowPage("editor", true); Notify("스크롤 캡처 완료 · 연결 부분을 확인하세요.");
             restore = false; FinishCapture(wasVisible);
         }
         catch (Exception ex) { restore = true; Notify("스크롤 캡처 실패: " + ex.Message); }
@@ -411,6 +419,14 @@ internal sealed partial class MainWindow : Window
             opacity.Items.Add(level);
         }
         menu.Items.Add(opacity);
+        // Clicks pass through to whatever is underneath, so a reference image can stay over the app being worked in.
+        var through = new MenuItem { Header = "클릭 통과" };
+        through.Click += (_, _) =>
+        {
+            SetPinLocked(w, true);
+            if (!lockNoticeShown) { lockNoticeShown = true; tray?.ShowBalloonTip(3000, "담아", "클릭 통과는 트레이 메뉴의 ‘고정 창 잠금 풀기’로 풉니다.", Forms.ToolTipIcon.Info); }
+        };
+        menu.Items.Add(through);
         var close = new MenuItem { Header = "고정 창 닫기", InputGestureText = "Esc" }; close.Click += (_, _) => w.Close(); menu.Items.Add(close); frame.ContextMenu = menu;
         w.PreviewKeyDown += (_, e) =>
         {
@@ -429,8 +445,20 @@ internal sealed partial class MainWindow : Window
             var width = Math.Clamp(w.Width * (e.Delta > 0 ? 1.1 : 1 / 1.1), 80, 3000); var height = width * aspect;
             w.Left -= (width - w.Width) / 2; w.Top -= (height - w.Height) / 2; w.Width = width; w.Height = height; e.Handled = true;
         };
-        pinWindows.Add(w); w.Closed += (_, _) => pinWindows.Remove(w); w.Show(); w.Activate();
+        pinWindows.Add(w); w.Closed += (_, _) => { pinWindows.Remove(w); lockedPins.Remove(w); }; w.Show(); w.Activate();
     }
+    private readonly HashSet<Window> lockedPins = new();
+    private bool lockNoticeShown;
+    private void SetPinLocked(Window pin, bool locked)
+    {
+        var handle = new WindowInteropHelper(pin).Handle;
+        if (handle == IntPtr.Zero) return;
+        var style = NativeMethods.GetWindowLongPtr(handle, NativeMethods.GWL_EXSTYLE).ToInt64();
+        style = locked ? style | NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED : style & ~NativeMethods.WS_EX_TRANSPARENT;
+        NativeMethods.SetWindowLongPtr(handle, NativeMethods.GWL_EXSTYLE, new IntPtr(style));
+        if (locked) lockedPins.Add(pin); else lockedPins.Remove(pin);
+    }
+    private void UnlockPins() { foreach (var pin in lockedPins.ToArray()) SetPinLocked(pin, false); }
     private void Print()
     {
         if (!RequireImage()) return;
@@ -444,13 +472,71 @@ internal sealed partial class MainWindow : Window
         Try(() => { var folder = Path.Combine(Path.GetTempPath(), "DamaCapture"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, Guid.NewGuid().ToString("N") + ".png"); ImageFiles.Save(document!.Render(), path); var p = new ProcessStartInfo("mspaint.exe") { UseShellExecute = true }; p.ArgumentList.Add(path); Process.Start(p); Notify("편집된 PNG를 그림판에서 열었습니다. 임시 파일: " + path); });
     }
 
-    private bool RegisterHotkeys()
+    // The global hotkeys, by id: 1 region, 2 window, 3 scroll, 4 the last region again, 5 text only.
+    private (int Id, uint Modifiers, uint Key)[] HotkeyBindings() =>
+    [
+        (1, settings.RegionModifiers, settings.RegionHotkey), (2, settings.WindowModifiers, settings.WindowHotkey), (3, settings.ScrollModifiers, settings.ScrollHotkey),
+        (4, settings.LastRegionModifiers, settings.LastRegionHotkey), (5, settings.TextModifiers, settings.TextHotkey)
+    ];
+    /// <summary>Registers every hotkey and returns the ids Windows refused.</summary>
+    private int[] RegisterHotkeys(bool quiet = false)
     {
-        hotkeys?.Dispose(); hotkeys = new GlobalHotkeys(this);
-        hotkeys.Pressed += id => Dispatcher.BeginInvoke(async () => { if (capturing || OwnedWindows.Cast<Window>().Any(window => window.IsVisible)) return; if (id == 3) await StartScroll(); else await StartCapture(id == 2 ? CaptureMode.Window : CaptureMode.Region); });
-        var a = hotkeys.Register(1, settings.RegionModifiers, settings.RegionHotkey); var b = hotkeys.Register(2, settings.WindowModifiers, settings.WindowHotkey); var c = hotkeys.Register(3, settings.ScrollModifiers, settings.ScrollHotkey);
-        if (!(a && b && c)) Notify("일부 전역 단축키가 다른 앱과 겹칩니다. 설정에서 변경할 수 있습니다.");
-        return a && b && c;
+        hotkeys?.Dispose(); hotkeys = new GlobalHotkeys(this); hotkeysPaused = false; UpdateTrayText();
+        hotkeys.Pressed += id => Dispatcher.BeginInvoke(async () =>
+        {
+            if (capturing || OwnedWindows.Cast<Window>().Any(window => window.IsVisible)) return;
+            switch (id)
+            {
+                case 2: await StartCapture(CaptureMode.Window); break;
+                case 3: await StartScroll(); break;
+                case 4: await StartCapture(CaptureMode.LastRegion); break;
+                case 5: await StartTextCapture(); break;
+                default: await StartCapture(CaptureMode.Region); break;
+            }
+        });
+        // Every binding is tried, so one taken combination does not keep the others from working.
+        var failed = HotkeyBindings().Where(binding => !hotkeys.Register(binding.Id, binding.Modifiers, binding.Key)).Select(binding => binding.Id).ToArray();
+        if (failed.Length > 0 && !quiet) Notify("일부 전역 단축키가 다른 앱과 겹칩니다. 설정에서 변경할 수 있습니다.");
+        return failed;
+    }
+    // A game, video or slideshow that fills the screen gets the keys back while it does, when the user asks for that.
+    private readonly System.Windows.Threading.DispatcherTimer fullScreenTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
+    private bool hotkeysPaused;
+    private void ApplyFullScreenPause()
+    {
+        fullScreenTimer.Stop();
+        if (demo) return;
+        if (settings.PauseHotkeysInFullScreen) { fullScreenTimer.Start(); CheckFullScreen(); }
+        else if (hotkeysPaused) RegisterHotkeys(quiet: true);
+    }
+    private void CheckFullScreen()
+    {
+        // The selection overlay fills the screen too; a capture in progress keeps things as they are.
+        if (capturing || exiting) return;
+        var busy = FullScreenAppActive();
+        if (busy && !hotkeysPaused) { hotkeys?.Dispose(); hotkeys = null; hotkeysPaused = true; UpdateTrayText(); }
+        else if (!busy && hotkeysPaused) RegisterHotkeys(quiet: true);
+    }
+    private static bool FullScreenAppActive()
+    {
+        try
+        {
+            if (NativeMethods.SHQueryUserNotificationState(out var state) != 0 || state is not (2 or 3 or 4)) return false;
+            // One of this app's own windows (a pinned image, the editor) never counts.
+            NativeMethods.GetWindowThreadProcessId(NativeMethods.GetForegroundWindow(), out var owner);
+            return owner != (uint)Environment.ProcessId;
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException) { return false; }
+    }
+    private void UpdateTrayText() { if (tray != null) tray.Text = hotkeysPaused ? "담아 | 전체 화면 중 단축키 쉼" : "담아 | 화면 캡처"; }
+    // 이전 영역 survives a restart; only a change is written.
+    private void RememberLastRegion()
+    {
+        if (capture.LastRegion is not { } area) return;
+        int[] value = [area.X, area.Y, area.Width, area.Height];
+        if (settings.LastRegion.SequenceEqual(value)) return;
+        settings.LastRegion = value;
+        if (!demo) { try { settingsStore.Save(settings); } catch (Exception) { } }
     }
     private void SetupTray()
     {
@@ -462,6 +548,12 @@ internal sealed partial class MainWindow : Window
         menu.Items.Add("영역 캡처", null, (_, _) => Dispatcher.Invoke(async () => await StartCapture(CaptureMode.Region)));
         menu.Items.Add("창 캡처", null, (_, _) => Dispatcher.Invoke(async () => await StartCapture(CaptureMode.Window)));
         menu.Items.Add("스크롤 캡처", null, (_, _) => Dispatcher.Invoke(async () => await StartScroll()));
+        menu.Items.Add("이전 영역 다시 캡처", null, (_, _) => Dispatcher.Invoke(async () => await StartCapture(CaptureMode.LastRegion)));
+        menu.Items.Add("글자 캡처", null, (_, _) => Dispatcher.Invoke(async () => await StartTextCapture()));
+        // Shown only while a pinned image lets clicks through, since that window can no longer be clicked.
+        var unlockPins = new Forms.ToolStripMenuItem("고정 창 잠금 풀기", null, (_, _) => Dispatcher.Invoke(UnlockPins)) { Visible = false };
+        menu.Items.Add(unlockPins);
+        menu.Opening += (_, _) => unlockPins.Visible = Dispatcher.Invoke(() => lockedPins.Count > 0);
         menu.Items.Add(new Forms.ToolStripSeparator()); menu.Items.Add("담아 정보", null, (_, _) => Dispatcher.Invoke(() => { Show(); WindowState = WindowState.Normal; Activate(); ShowAbout(); }));
         menu.Items.Add("완전히 종료", null, (_, _) => Dispatcher.Invoke(Exit)); tray.ContextMenuStrip = menu;
         tray.DoubleClick += (_, _) => { Show(); WindowState = WindowState.Normal; Activate(); };
@@ -513,7 +605,9 @@ internal sealed partial class MainWindow : Window
         if (key == Key.Space && currentPage == "editor" && canvasScroll?.IsMouseOver == true) { e.Handled = true; return; }
         if (Keyboard.Modifiers == ModifierKeys.Control)
         {
-            if (key == Key.S) { Save(); e.Handled = true; } else if (key == Key.C) { Copy(); e.Handled = true; } else if (key == Key.V) { PasteImage(); e.Handled = true; } else if (key == Key.O) { OpenDialog(); e.Handled = true; } else if (key == Key.Z) { Undo(); e.Handled = true; } else if (key == Key.Y) { Redo(); e.Handled = true; }
+            if (key == Key.C && reading != null) { CopyReading(); e.Handled = true; }
+            else if (key == Key.A && reading != null) { surface.SelectAllReading(); e.Handled = true; }
+            else if (key == Key.S) { Save(); e.Handled = true; } else if (key == Key.C) { Copy(); e.Handled = true; } else if (key == Key.V) { PasteImage(); e.Handled = true; } else if (key == Key.O) { OpenDialog(); e.Handled = true; } else if (key == Key.Z) { Undo(); e.Handled = true; } else if (key == Key.Y) { Redo(); e.Handled = true; }
             else if (currentPage == "editor" && key is Key.OemPlus or Key.Add) { SetZoom(zoom * 1.25); e.Handled = true; }
             else if (currentPage == "editor" && key is Key.OemMinus or Key.Subtract) { SetZoom(zoom / 1.25); e.Handled = true; }
             else if (currentPage == "editor" && key is Key.D0 or Key.NumPad0) { FitView(); e.Handled = true; }
@@ -524,7 +618,7 @@ internal sealed partial class MainWindow : Window
             var tool = document == null || key == Key.None ? null : EditTools.FirstOrDefault(x => x.Key == key).Id;
             if (tool != null) { SelectTool(tool); e.Handled = true; }
             else if (key == Key.Delete) { surface.DeleteSelection(); e.Handled = true; }
-            else if (key == Key.Escape) { surface.CancelPendingEdit(); surface.Select(null); CollapseCodes(); if (surface.Tool == "Extract") LeaveExtractMode(); e.Handled = true; }
+            else if (key == Key.Escape) { surface.CancelPendingEdit(); surface.Select(null); CollapseCodes(); if (surface.Tool == "Extract") LeaveExtractMode(); else if (surface.Tool == "Read") LeaveReading(); e.Handled = true; }
         }
     }
     // Waiting in the tray, the app keeps only what the next capture needs: the open image stays, older edit
@@ -550,17 +644,17 @@ internal sealed partial class MainWindow : Window
     private Border BuildToastHost()
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        toastText = new TextBlock { FontSize = 13, Foreground = Ui.OnPrimary, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
+        toastText = new TextBlock { FontSize = 13, Foreground = Ui.TipText, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
         row.Children.Add(toastText);
-        toastDivider = new Border { Width = 1, Height = 16, Background = Ui.Brush("#4DFFFFFF"), Margin = new Thickness(12, 0, 4, 0) }; row.Children.Add(toastDivider);
+        toastDivider = new Border { Width = 1, Height = 16, Background = Ui.TipDivider, Margin = new Thickness(12, 0, 4, 0) }; row.Children.Add(toastDivider);
         toastButton = Ui.Button("", () => { var action = toastAction; HideToast(); action?.Invoke(); });
-        Ui.SetGhost(toastButton, false, false); toastButton.Foreground = Ui.OnPrimary; toastButton.FontWeight = FontWeights.SemiBold; toastButton.Height = 28; toastButton.Padding = new Thickness(8, 0, 6, 0);
+        Ui.SetGhost(toastButton, false, false); toastButton.Foreground = Ui.TipText; toastButton.FontWeight = FontWeights.SemiBold; toastButton.Height = 28; toastButton.Padding = new Thickness(8, 0, 6, 0);
         row.Children.Add(toastButton);
         // How long the way back stays open, drawn rather than counted.
-        toastRing = new Ring(14) { Thickness = 2, Track = Ui.Brush("#4A494D"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 6, 0) }; row.Children.Add(toastRing);
+        toastRing = new Ring(14) { Thickness = 2, Track = Ui.TipTrack, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 6, 0) }; row.Children.Add(toastRing);
         toastHost = new Border
         {
-            Child = row, Background = Ui.Brush("#1F1E21"), CornerRadius = new CornerRadius(8), Padding = new Thickness(14, 8, 8, 8),
+            Child = row, Background = Ui.Tip, CornerRadius = new CornerRadius(8), Padding = new Thickness(14, 8, 8, 8),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 20), Visibility = Visibility.Collapsed
         };
         AutomationProperties.SetLiveSetting(toastHost, AutomationLiveSetting.Polite);

@@ -41,6 +41,14 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] internal static extern int GetFrameBounds(IntPtr hwnd, int attribute, out RECT value, int size);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] internal static extern int GetCloaked(IntPtr hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll")] internal static extern int DwmFlush();
+    /// <summary>Nonzero when a window asked to be kept out of screen captures (WDA_MONITOR or WDA_EXCLUDEFROMCAPTURE).</summary>
+    [DllImport("user32.dll")] internal static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] internal static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] internal static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+    internal const int GWL_EXSTYLE = -20;
+    internal const long WS_EX_TRANSPARENT = 0x20, WS_EX_LAYERED = 0x80000;
+    /// <summary>QUNS_BUSY (2), QUNS_RUNNING_D3D_FULL_SCREEN (3) and QUNS_PRESENTATION_MODE (4) mean something fills the screen.</summary>
+    [DllImport("shell32.dll")] internal static extern int SHQueryUserNotificationState(out int state);
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     /// <summary>Turns the compositor's open/close animation on or off for one window.</summary>
     internal static void SetWindowTransitions(IntPtr hwnd, bool enabled)

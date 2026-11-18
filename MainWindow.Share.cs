@@ -74,14 +74,15 @@ internal sealed partial class MainWindow
         if (!RequireImage() || extractingText) return;
         if (surface.Tool == "Extract") { LeaveExtractMode(); return; }
         surface.CompletePendingEdit();
-        toolBeforeExtract = surface.Tool;
+        // Reading another area while one is laid out keeps the tool the user had before either.
+        if (surface.Tool != "Read") toolBeforeExtract = surface.Tool;
         SelectTool("Extract");
     }
 
     private void LeaveExtractMode()
     {
         if (surface.Tool != "Extract") return;
-        SelectTool(toolBeforeExtract is null or "Extract" ? "Select" : toolBeforeExtract);
+        SelectTool(toolBeforeExtract is null or "Extract" or "Read" ? "Select" : toolBeforeExtract);
     }
 
     private async void ExtractTextFrom(Rect bounds)
@@ -91,6 +92,7 @@ internal sealed partial class MainWindow
         extractingText = true; Notify("텍스트 추출 중…");
         // The composed image is used, so masked areas never reach the text.
         BitmapSource composed = document.Render();
+        var source = document; var composedRevision = document.Revision;
         var x = (int)Math.Clamp(Math.Floor(bounds.X), 0, document.Width - 1);
         var y = (int)Math.Clamp(Math.Floor(bounds.Y), 0, document.Height - 1);
         var width = (int)Math.Clamp(Math.Ceiling(bounds.Right) - x, 1, document.Width - x);
@@ -99,8 +101,8 @@ internal sealed partial class MainWindow
         {
             var crop = new CroppedBitmap(composed, new Int32Rect(x, y, width, height)); crop.Freeze(); composed = crop;
         }
-        TextRecognition.Result? result = null; Exception? failure = null;
-        try { result = await AnalysisHost.RecognizeAsync(composed); }
+        TextRecognition.Reading? result = null; Exception? failure = null;
+        try { result = await AnalysisHost.ReadAsync(composed); }
         catch (Exception ex) { failure = ex; }
         // Recognition runs off the UI thread; come back explicitly instead of relying on the caller's context.
         await Dispatcher.InvokeAsync(() =>
@@ -112,9 +114,10 @@ internal sealed partial class MainWindow
                 MessageBox.Show(this, failure.Message, "텍스트 추출", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            if (result!.Text.Length == 0) { Toast("글자를 찾지 못했습니다"); return; }
-            Notify("텍스트 추출 완료");
-            new TextResultWindow(this, result, ChatServices, SendTextToChat).ShowDialog();
+            if (result!.Lines.Count == 0) { Toast("글자를 찾지 못했습니다"); return; }
+            // The image may have changed while it was being read; the words would no longer sit on it.
+            if (!ReferenceEquals(document, source) || composedRevision != source.Revision) { Notify("이미지가 바뀌어 추출을 멈췄습니다."); return; }
+            ShowReading(result, new Point(x, y));
         });
     }
 }

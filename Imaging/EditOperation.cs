@@ -6,7 +6,7 @@ namespace DamaCapture.Imaging;
 
 public enum EditKind
 {
-    Mosaic, Blur, Solid, Pen, Arrow, Rectangle, Ellipse, Line, Text, Number, Highlight
+    Mosaic, Blur, Solid, Pen, Arrow, Rectangle, Ellipse, Line, Text, Number, Highlight, Measure
 }
 
 public sealed record EditOperation

@@ -68,6 +68,8 @@ internal sealed partial class MainWindow
     private void ArchiveClipboardCapture(ClipboardCapture capture)
     {
         if (!settings.ArchiveClipboard || closingHistory || exiting) return;
+        // Copies made in an app the user chose to leave out are not recorded at all, not even as a title.
+        if (settings.ExcludesFromClipboard(capture.ApplicationName)) return;
         try
         {
             var entry = clipboardHistory.RecordClipboard(capture.Kind, capture.CopiedAt, capture.WindowTitle,
@@ -96,12 +98,7 @@ internal sealed partial class MainWindow
             }
             else
             {
-                if (currentHistoryId == entry.Id) { surface.CompletePendingEdit(); PreserveHistoryImage(); }
-                var pixels = currentHistoryId == entry.Id ? document?.Render()
-                    : sessionDocuments.TryGet(entry.Id, out var session) ? session.Document.Render()
-                    : WriterFor(entry.Id).PendingOrFailed(entry.Id);
-                var latest = FindHistory(entry.Id) ?? entry;
-                if (pixels == null && File.Exists(latest.ImagePath)) pixels = ImageFiles.Load(latest.ImagePath);
+                var pixels = HistoryPixels(entry);
                 if (pixels == null) { Notify("다시 복사할 이미지가 없습니다."); return; }
                 ClipboardTransfer.SetImage(pixels);
             }
@@ -109,6 +106,34 @@ internal sealed partial class MainWindow
             Toast("복사했습니다");
         });
         return copied;
+    }
+
+    /// <summary>Stops recording copies from one app; what was already recorded stays until the user deletes it.</summary>
+    private void ExcludeFromClipboard(string application)
+    {
+        if (string.IsNullOrWhiteSpace(application) || settings.ExcludesFromClipboard(application)) return;
+        var before = settings.ClipboardExcludedApps;
+        settings.ClipboardExcludedApps = [.. before, application];
+        if (!demo) { try { settingsStore.Save(settings); } catch (Exception ex) { settings.ClipboardExcludedApps = before; Notify("설정을 저장하지 못했습니다. " + ex.Message); return; } }
+        Toast($"{application}의 복사는 이제 기록하지 않습니다", "되돌리기", () =>
+        {
+            var excluded = settings.ClipboardExcludedApps;
+            settings.ClipboardExcludedApps = excluded.Where(app => !string.Equals(app, application, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (!demo) { try { settingsStore.Save(settings); } catch (Exception ex) { settings.ClipboardExcludedApps = excluded; Notify("설정을 저장하지 못했습니다. " + ex.Message); return; } }
+            Notify("되돌렸습니다");
+        });
+    }
+
+    /// <summary>The newest composed pixels of a record: the open image, an edit session, a pending write, or its stored PNG.</summary>
+    private System.Windows.Media.Imaging.BitmapSource? HistoryPixels(HistoryEntry entry)
+    {
+        if (currentHistoryId == entry.Id) { surface.CompletePendingEdit(); PreserveHistoryImage(); }
+        var pixels = currentHistoryId == entry.Id ? document?.Render()
+            : sessionDocuments.TryGet(entry.Id, out var session) ? session.Document.Render()
+            : WriterFor(entry.Id).PendingOrFailed(entry.Id);
+        var latest = FindHistory(entry.Id) ?? entry;
+        if (pixels == null && File.Exists(latest.ImagePath)) pixels = ImageFiles.Load(latest.ImagePath);
+        return pixels;
     }
 
     private void OpenClipboardPreview(HistoryEntry entry)

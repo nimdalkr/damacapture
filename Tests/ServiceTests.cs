@@ -111,6 +111,59 @@ public static class ServiceTests
             && string.IsNullOrEmpty(followStore.Find(followedEntry.Id)!.Path), "The followed file was not stored apart from a manual export.");
         results.Add("바로 저장 파일: 기록에 따라갈 파일 경로를 직접 저장한 파일과 따로 보관 통과");
 
+        // 1.1 settings: two more hotkeys, 이전 영역 kept across restarts, apps left out of the clipboard history, the theme.
+        var fresh11 = new AppSettings();
+        Assert(fresh11.LastRegionHotkey == 0x34 && fresh11.TextHotkey == 0x35 && fresh11.LastRegionModifiers == 6 && fresh11.TextModifiers == 6
+            && !fresh11.PauseHotkeysInFullScreen && fresh11.Theme == "light" && fresh11.LastRegion.Length == 0 && fresh11.ClipboardExcludedApps.Length == 0, "New settings must start from their defaults.");
+        settings.Save(new AppSettings { LastRegion = [-1920, 40, 640, 360], ClipboardExcludedApps = [" KakaoTalk ", "kakaotalk", "", "Bank"], Theme = "dark", PauseHotkeysInFullScreen = true, TextModifiers = 0, TextHotkey = AppSettings.PrintScreen });
+        loaded = settings.Load();
+        Assert(loaded.LastRegion.SequenceEqual(new[] { -1920, 40, 640, 360 }) && loaded.Theme == "dark" && loaded.PauseHotkeysInFullScreen && loaded.TextModifiers == 0 && loaded.TextHotkey == AppSettings.PrintScreen,
+            "The last region on a left-hand monitor, the theme, the full-screen pause or a lone PrtSc did not round-trip.");
+        Assert(loaded.ClipboardExcludedApps.SequenceEqual(new[] { "KakaoTalk", "Bank" }) && loaded.ExcludesFromClipboard("KAKAOTALK") && !loaded.ExcludesFromClipboard("Kakao"),
+            "Excluded apps must be trimmed, de-duplicated and matched by whole name regardless of case.");
+        settings.Save(new AppSettings { LastRegion = [0, 0, 1, 300], Theme = "neon", LastRegionModifiers = 2, LastRegionHotkey = 0x41 });
+        loaded = settings.Load();
+        Assert(loaded.LastRegion.Length == 0 && loaded.Theme == "light" && loaded.LastRegionModifiers == AppSettings.DefaultModifiers, "A degenerate region, an unknown theme or a one-modifier letter must fall back.");
+        File.WriteAllText(settings.FilePath, "{\"regionHotkey\":49}");
+        loaded = settings.Load();
+        Assert(loaded.LastRegionHotkey == 0x34 && loaded.TextHotkey == 0x35 && loaded.ClipboardExcludedApps.Length == 0, "A 1.0 settings file must get the new defaults.");
+        // Someone who already gave Ctrl+Shift+4 to region capture keeps it; the new hotkeys move to the next free digits.
+        File.WriteAllText(settings.FilePath, "{\"regionHotkey\":52}");
+        loaded = settings.Load();
+        Assert(loaded.RegionHotkey == 0x34 && loaded.LastRegionHotkey == 0x35 && loaded.TextHotkey == 0x36 && loaded.LastRegionModifiers == 6 && loaded.TextModifiers == 6,
+            "New default hotkeys must give way to a combination an older setup already uses.");
+        results.Add("1.1 설정: 이전 영역·글자 캡처 단축키 기본값, 이전 영역 보존(왼쪽 모니터 좌표 포함), 복사 기록 제외 앱 정리·대소문자 무시 비교, 테마·잘못된 값 복구, 1.0 설정 호환·기존 단축키와 겹치는 새 기본값 양보 통과");
+
+        // Windows that keep themselves out of screenshots: only the part not covered by a window above is reported.
+        var capture = new System.Drawing.Rectangle(0, 0, 1000, 600);
+        static (System.Drawing.Rectangle, bool) W(int x, int y, int w, int h, bool isProtected = false) => (new System.Drawing.Rectangle(x, y, w, h), isProtected);
+        var open = DamaCapture.Capture.CaptureService.VisibleProtectedAreas([W(100, 100, 300, 200, true)], capture);
+        Assert(open.Count == 1 && open[0] == new System.Drawing.Rectangle(100, 100, 300, 200), "A protected window in plain view must be reported where it is.");
+        var half = DamaCapture.Capture.CaptureService.VisibleProtectedAreas([W(0, 0, 250, 600), W(100, 100, 300, 200, true)], capture);
+        Assert(half.Count == 1 && half[0] == new System.Drawing.Rectangle(250, 100, 150, 200), "A window above must cut away the part of a protected window it covers.");
+        Assert(DamaCapture.Capture.CaptureService.VisibleProtectedAreas([W(50, 50, 500, 400), W(100, 100, 300, 200, true)], capture).Count == 0, "A fully covered protected window must not be reported.");
+        var edge = DamaCapture.Capture.CaptureService.VisibleProtectedAreas([W(900, 500, 300, 300, true), W(10, 10, 5, 5, true)], capture);
+        Assert(edge.Count == 1 && edge[0] == new System.Drawing.Rectangle(900, 500, 100, 100), "A protected window must be clipped to the capture, and slivers left out.");
+        Assert(DamaCapture.Capture.CaptureService.VisibleProtectedAreas([W(100, 100, 300, 200)], capture).Count == 0, "An ordinary window must never be reported.");
+        results.Add("캡처 차단 표시: 가린 창 위에 덮인 부분 제외, 캡처 범위로 자르기, 일반 창과 아주 작은 조각 제외 통과");
+
+        // A dimension draws its line, ticks and length tag in the ink color, and reads its length in image pixels.
+        Assert(ImageDocument.MeasureLabel(new Point(0, 0), new Point(30, 40)) == "50 px" && ImageDocument.MeasureLabel(new Point(5, 5), new Point(1205, 5)) == "1,200 px", "The dimension label must be the rounded length in pixels.");
+        var white = BitmapSource.Create(240, 120, 96, 96, PixelFormats.Bgra32, null, Enumerable.Repeat((byte)255, 240 * 120 * 4).ToArray(), 240 * 4);
+        var measured = new ImageDocument(white);
+        measured.Add(new EditOperation { Kind = EditKind.Measure, Bounds = new Rect(20, 60, 200, 1), Points = [new Point(20, 60), new Point(220, 60)], Color = Color.FromRgb(0x28, 0x8F, 0xFF), Stroke = 4 });
+        var measuredPixels = ImageDocument.Pixels(measured.Render());
+        bool Blue(int x, int y) { var o = (y * 240 + x) * 4; return measuredPixels[o] > 200 && measuredPixels[o + 2] < 90; }
+        Assert(Blue(40, 60) && Blue(20, 52) && Blue(220, 68) && !Blue(40, 40), "The dimension line or its end ticks were not drawn in the ink color.");
+        results.Add("치수: 길이 표기(px, 천 단위 구분), 선·양끝 눈금을 주석 색으로 합성 통과");
+
+        // Read text keeps reading order: words of a line joined by a space (none for Japanese or Chinese), lines by a line break.
+        var word = (string text) => new TextRecognition.Word(text, new Rect(0, 0, 10, 10));
+        var korean = new TextRecognition.Reading([], "ko");
+        Assert(korean.TextOf([(0, word("담당자")), (0, word("홍길동")), (1, word("이메일"))]) == "담당자 홍길동" + Environment.NewLine + "이메일"
+            && new TextRecognition.Reading([], "ja-JP").TextOf([(0, word("確")), (0, word("認"))]) == "確認", "Read words were not joined as they read.");
+        results.Add("글자 읽기: 줄 안 단어는 띄어쓰기(일본어·중국어는 붙임), 줄은 줄바꿈으로 이어 붙임 통과");
+
         HistoryTests(directory, results);
 
         var first = Frame(160, 200, 0);

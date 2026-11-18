@@ -23,6 +23,15 @@ public static class TextRecognition
     /// <summary>A recognized word with its bounds in the original image's pixel coordinates.</summary>
     public sealed record Word(string Text, Rect Bounds);
     public sealed record Line(IReadOnlyList<Word> Words);
+    /// <summary>Words by line with where each sits, and the language they were read in.</summary>
+    public sealed record Reading(IReadOnlyList<Line> Lines, string LanguageTag)
+    {
+        /// <summary>Japanese and Chinese words are single characters; other languages keep a space between words.</summary>
+        public string Separator => LanguageTag.StartsWith("ja", StringComparison.OrdinalIgnoreCase) || LanguageTag.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "" : " ";
+        /// <summary>The words in reading order, one line per line of text.</summary>
+        public string TextOf(IEnumerable<(int Line, Word Word)> words) => string.Join(Environment.NewLine,
+            words.GroupBy(item => item.Line).Select(line => string.Join(Separator, line.Select(item => item.Word.Text)).Trim()).Where(line => line.Length > 0));
+    }
 
     public static IReadOnlyList<string> AvailableLanguages
     {
@@ -46,12 +55,15 @@ public static class TextRecognition
     }
 
     /// <summary>Words with positions, for callers that need to know where text sits in the image.</summary>
-    public static async Task<IReadOnlyList<Line>> RecognizeWordsAsync(BitmapSource image, string? preferredLanguage = null)
+    public static async Task<IReadOnlyList<Line>> RecognizeWordsAsync(BitmapSource image, string? preferredLanguage = null) =>
+        (await ReadAsync(image, preferredLanguage)).Lines;
+
+    public static async Task<Reading> ReadAsync(BitmapSource image, string? preferredLanguage = null)
     {
-        var (recognized, _, scale) = await RecognizeCoreAsync(image, preferredLanguage);
-        return recognized.Lines.Select(line => new Line(line.Words.Select(word =>
+        var (recognized, tag, scale) = await RecognizeCoreAsync(image, preferredLanguage);
+        return new Reading(recognized.Lines.Select(line => new Line(line.Words.Select(word =>
                 new Word(word.Text, new Rect(word.BoundingRect.X / scale, word.BoundingRect.Y / scale, word.BoundingRect.Width / scale, word.BoundingRect.Height / scale))).ToArray()))
-            .Where(line => line.Words.Count > 0).ToArray();
+            .Where(line => line.Words.Count > 0).ToArray(), tag);
     }
 
     private static async Task<(OcrResult Recognized, string LanguageTag, double Scale)> RecognizeCoreAsync(BitmapSource image, string? preferredLanguage)

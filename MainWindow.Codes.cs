@@ -99,7 +99,7 @@ internal sealed partial class MainWindow
     // Text extraction drags over the whole image, so nothing may sit on it in that mode.
     private void UpdateCodeLayerVisibility()
     {
-        if (codeLayer != null) codeLayer.Visibility = surface.Tool == "Extract" ? Visibility.Collapsed : Visibility.Visible;
+        if (codeLayer != null) codeLayer.Visibility = surface.Tool is "Extract" or "Read" ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private CodeBubble BuildBubble(CodeFinding code)
@@ -137,13 +137,13 @@ internal sealed partial class MainWindow
         column.Children.Add(actions);
         var card = new Border
         {
-            Child = column, Background = Ui.Panel, BorderBrush = Ui.Brush("#DAD5CE"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10),
+            Child = column, Background = Ui.Panel, BorderBrush = Ui.Edge, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 9, 10, 10), Margin = new Thickness(BubbleTail), MaxWidth = BubbleWidth
         };
         // The tail is drawn after the card so its base covers the card's border on whichever side it sits.
         var tail = new Grid { IsHitTestVisible = false, Tag = "" };
         tail.Children.Add(new Path { Fill = Ui.Panel });
-        tail.Children.Add(new Path { Stroke = Ui.Brush("#DAD5CE"), StrokeThickness = 1, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round });
+        tail.Children.Add(new Path { Stroke = Ui.Edge, StrokeThickness = 1, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round });
         // Folded, only this chip remains on the code's corner.
         var chip = Ui.IconButton(link != null ? "QR 코드 링크 보기" : "QR 코드 내용 보기", "qrcode", () => { }, compact: true);
         chip.Width = ChipSize; chip.Height = ChipSize; chip.Padding = new Thickness(5); chip.Visibility = Visibility.Collapsed;

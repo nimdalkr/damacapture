@@ -41,6 +41,8 @@ internal static class ToolbarIcons
         ["rectangle"] = [new("M3,5 H21 V19 H3 Z")],
         ["ellipse"] = [new("M21,12 A9,7 0 1 1 3,12 A9,7 0 1 1 21,12 Z")],
         ["line"] = [new("M4,20 L20,4")],
+        ["measure"] = [new("M3,7 V17 M21,7 V17 M3,12 H21 M6.5,9 L3.5,12 L6.5,15 M17.5,9 L20.5,12 L17.5,15")],
+        ["grip"] = [new("M9,5 H9.1 M15,5 H15.1 M9,10 H9.1 M15,10 H15.1 M9,15 H9.1 M15,15 H15.1 M9,20 H9.1 M15,20 H15.1")],
         ["highlight"] = [new("M6,14 L14,3 L21,8 L13,19 Z M6,14 L4,18 L8,21 L13,19 M3,22 H15")],
         ["text"] = [new("M4,4 H20 M12,4 V21 M8,21 H16 M4,4 V7 M20,4 V7")],
         ["number"] = [new("M21,12 A9,9 0 1 1 3,12 A9,9 0 1 1 21,12 Z M9,9 L12,7 V17 M9,17 H15")],

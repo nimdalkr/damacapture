@@ -29,10 +29,13 @@ internal sealed class EditorSurface : FrameworkElement
     private IReadOnlyList<Rect> marks = [];
     /// <summary>Areas a bubble points at, outlined in ink rather than red: they are information, not a warning.</summary>
     public IReadOnlyList<Rect> Marks { get => marks; set { marks = value ?? []; DrawHints(); } }
+    private IReadOnlyList<Rect> blocked = [];
+    /// <summary>Where a window kept itself out of the capture; shown, never exported, gone once the image is worked on.</summary>
+    public IReadOnlyList<Rect> Blocked { get => blocked; set { blocked = value ?? []; DrawHints(); } }
     // Rendering is layered so that only what moves is redrawn: the image and committed edits are drawn in
     // OnRender, while the drag preview, detection hints and scan line each live in their own visual.
     // This keeps software rendering cheap even for large captures.
-    private readonly DrawingVisual previewLayer = new(), hintLayer = new(), scanLayer = new();
+    private readonly DrawingVisual previewLayer = new(), hintLayer = new(), scanLayer = new(), readingLayer = new();
     private readonly ContainerVisual scanClip = new();
     private readonly TranslateTransform scanOffset = new();
     public static readonly DependencyProperty ScanLineProperty = DependencyProperty.Register(nameof(ScanLine), typeof(double), typeof(EditorSurface),
@@ -66,22 +69,90 @@ internal sealed class EditorSurface : FrameworkElement
     {
         Focusable = true; Cursor = Cursors.Cross;
         MouseLeftButtonDown += Down; MouseMove += Move; MouseLeftButtonUp += Up;
-        LostMouseCapture += (_, _) => { if (dragging) CancelPendingEdit(); };
+        LostMouseCapture += (_, _) => { if (dragging) CancelPendingEdit(); readingDrag = false; };
         scanLayer.Transform = scanOffset; scanClip.Children.Add(scanLayer); scanClip.Opacity = 0;
-        foreach (var layer in new Visual[] { previewLayer, hintLayer, scanClip }) AddVisualChild(layer);
+        foreach (var layer in new Visual[] { previewLayer, hintLayer, scanClip, readingLayer }) AddVisualChild(layer);
     }
-    protected override int VisualChildrenCount => 3;
-    protected override Visual GetVisualChild(int index) => index switch { 0 => previewLayer, 1 => hintLayer, _ => scanClip };
+    protected override int VisualChildrenCount => 4;
+    protected override Visual GetVisualChild(int index) => index switch { 0 => previewLayer, 1 => hintLayer, 2 => scanClip, _ => readingLayer };
+
+    // Read text laid over the image: the words are lit, the rest dimmed, and a drag picks a run of words in reading order.
+    private IReadOnlyList<Rect> readingWords = [];
+    private IReadOnlyList<(int Start, int Count)> readingLines = [];
+    private (int From, int To)? readingSelection;
+    private int readingAnchor = -1;
+    private bool readingDrag;
+    /// <summary>Raised when the picked words change; read <see cref="ReadingSelection"/>.</summary>
+    public event Action? ReadingSelectionChanged;
+    /// <summary>First and last picked word, inclusive, in reading order; null when nothing is picked.</summary>
+    public (int From, int To)? ReadingSelection => readingSelection;
+    public bool IsReading => readingWords.Count > 0;
+    /// <summary>Words in image pixels in reading order, and each line as a run of them.</summary>
+    public void SetReading(IReadOnlyList<Rect> words, IReadOnlyList<(int Start, int Count)> lines)
+    {
+        if (readingDrag && IsMouseCaptured) ReleaseMouseCapture();
+        readingWords = words ?? []; readingLines = lines ?? []; readingSelection = null; readingAnchor = -1; readingDrag = false;
+        DrawReading();
+    }
+    /// <summary>What a drag from one point to another picks: every word from the one nearest the start to the one nearest the end.</summary>
+    internal void PickReading(Point from, Point to)
+    {
+        readingAnchor = WordAt(from, nearest: true);
+        PickReadingTo(to);
+        ReadingSelectionChanged?.Invoke();
+    }
+    private void PickReadingTo(Point point)
+    {
+        var current = WordAt(point, nearest: true);
+        if (readingAnchor < 0 || current < 0) return;
+        var picked = (Math.Min(readingAnchor, current), Math.Max(readingAnchor, current));
+        if (readingSelection != picked) { readingSelection = picked; DrawReading(); }
+    }
+    public void SelectAllReading()
+    {
+        if (readingWords.Count == 0) return;
+        readingSelection = (0, readingWords.Count - 1); DrawReading(); ReadingSelectionChanged?.Invoke();
+    }
+    private int WordAt(Point point, bool nearest)
+    {
+        var best = -1; var bestDistance = double.MaxValue;
+        for (var i = 0; i < readingWords.Count; i++)
+        {
+            var word = readingWords[i];
+            var dx = Math.Max(0, Math.Max(word.Left - point.X, point.X - word.Right));
+            var dy = Math.Max(0, Math.Max(word.Top - point.Y, point.Y - word.Bottom));
+            // Rows weigh more than columns, so a point beside a line picks that line, not the one above.
+            var distance = dx + dy * 3;
+            if (distance < bestDistance) { bestDistance = distance; best = i; }
+        }
+        return nearest || bestDistance <= 2 ? best : -1;
+    }
+    private void DrawReading()
+    {
+        using var dc = readingLayer.RenderOpen();
+        if (readingWords.Count == 0 || Document == null) return;
+        var scale = ViewScale;
+        var lit = new GeometryGroup { FillRule = FillRule.EvenOdd };
+        lit.Children.Add(new RectangleGeometry(new Rect(0, 0, Width, Height)));
+        foreach (var word in readingWords) { var area = word; area.Inflate(1.5 / scale, 1.5 / scale); lit.Children.Add(new RectangleGeometry(area, 2 / scale, 2 / scale)); }
+        dc.DrawGeometry(ReadingDim, null, lit);
+        if (readingSelection is not var (from, to)) return;
+        for (var i = from; i <= to && i < readingWords.Count; i++) { var area = readingWords[i]; area.Inflate(1.5 / scale, 1.5 / scale); dc.DrawRectangle(ReadingPick, null, area); }
+    }
+    // Marks on the picture itself: the image keeps its colors whatever the app theme is.
+    private static readonly SolidColorBrush ImageInk = Frozen(Color.FromRgb(0x08, 0x08, 0x09)), ImageGray = Frozen(Color.FromRgb(0x6B, 0x66, 0x61)), ImagePaper = Frozen(Color.FromRgb(0xFA, 0xF9, 0xF7));
+    private static readonly SolidColorBrush ReadingDim = Frozen(Color.FromArgb(0x70, 0, 0, 0)), ReadingPick = Frozen(Color.FromArgb(0x60, 238, 32, 46));
+    private static SolidColorBrush Frozen(Color color) { var brush = new SolidColorBrush(color); brush.Freeze(); return brush; }
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
         // Strokes and labels on the layers are sized for the current zoom.
-        if (e.Property == LayoutTransformProperty) { DrawHints(); DrawPreview(); }
+        if (e.Property == LayoutTransformProperty) { DrawHints(); DrawPreview(); DrawReading(); }
     }
     public void SetDocument(ImageDocument document)
     {
         CancelPendingEdit();
-        Document = document; SelectedId = null; Width = document.Width; Height = document.Height; Refresh();
+        Document = document; SelectedId = null; blocked = []; readingWords = []; readingLines = []; readingSelection = null; Width = document.Width; Height = document.Height; Refresh(); DrawReading();
     }
     public void Refresh()
     {
@@ -93,13 +164,22 @@ internal sealed class EditorSurface : FrameworkElement
     private void DrawHints()
     {
         using var dc = hintLayer.RenderOpen();
-        if ((hints.Count == 0 && marks.Count == 0) || Document == null) return;
+        if ((hints.Count == 0 && marks.Count == 0 && blocked.Count == 0) || Document == null) return;
         var scale = ViewScale;
         var thickness = 1.5 / scale;
+        foreach (var area in blocked)
+        {
+            dc.DrawGeometry(null, new Pen(ImageGray, thickness) { DashStyle = new DashStyle(new double[] { 4, 3 }, 0) }, Outline(area));
+            var note = new FormattedText("캡처 막힘", System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                new Typeface(new FontFamily("Segoe UI, Malgun Gothic"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal), 11 / scale, ImagePaper, 1.0);
+            var tag = new Rect(area.X + 6 / scale, area.Y + 6 / scale, note.Width + 10 / scale, note.Height + 4 / scale);
+            dc.DrawRectangle(ImageGray, null, tag);
+            dc.DrawText(note, new Point(tag.X + 5 / scale, tag.Y + 2 / scale));
+        }
         var reveal = Math.Clamp(HintReveal, 0, 1);
         if (reveal > 0)
             foreach (var mark in marks)
-                dc.DrawGeometry(null, new Pen(Ui.Primary, thickness) { DashStyle = HintDashes(reveal, 2 * (mark.Width + mark.Height) / thickness) }, Outline(mark));
+                dc.DrawGeometry(null, new Pen(ImageInk, thickness) { DashStyle = HintDashes(reveal, 2 * (mark.Width + mark.Height) / thickness) }, Outline(mark));
         var typeface = new Typeface(new FontFamily("Segoe UI, Malgun Gothic"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
         foreach (var (bounds, label) in hints)
         {
@@ -147,6 +227,8 @@ internal sealed class EditorSurface : FrameworkElement
             var pen = new Pen(new SolidColorBrush(Ink), Stroke) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
             for (var i = 1; i < points.Count; i++) dc.DrawLine(pen, points[i - 1], points[i]);
         }
+        // A new dimension shows its length while it is being drawn.
+        else if (activeTool == "Measure" && moving == null) ImageDocument.DrawMeasure(dc, start, last, Stroke, Ink);
         else
         {
             var r = preview?.Bounds ?? new Rect(start, last);
@@ -200,6 +282,24 @@ internal sealed class EditorSurface : FrameworkElement
     private void Down(object sender, MouseButtonEventArgs e)
     {
         if (Document == null) return;
+        if (Tool == "Read")
+        {
+            e.Handled = true; Focus();
+            if (readingWords.Count == 0) return;
+            var point = Position(e);
+            var hit = WordAt(point, nearest: false);
+            if (e.ClickCount == 2 && hit >= 0)
+            {
+                // A double click takes the whole line.
+                var line = readingLines.FirstOrDefault(run => hit >= run.Start && hit < run.Start + run.Count);
+                readingSelection = line.Count > 0 ? (line.Start, line.Start + line.Count - 1) : (hit, hit);
+                DrawReading(); ReadingSelectionChanged?.Invoke(); return;
+            }
+            readingAnchor = hit >= 0 ? hit : WordAt(point, nearest: true);
+            readingSelection = hit >= 0 ? (hit, hit) : null;
+            readingDrag = true; CaptureMouse(); DrawReading();
+            return;
+        }
         if (Tool == "Extract" && e.ClickCount == 2) { CancelPendingEdit(); ExtractRequested?.Invoke(new Rect(0, 0, Width, Height)); e.Handled = true; return; }
         CommitRequested?.Invoke();
         Focus(); start = last = Position(e); points.Clear(); points.Add(start); moving = null; preview = null; resizing = false; activeTool = Tool;
@@ -236,6 +336,7 @@ internal sealed class EditorSurface : FrameworkElement
     }
     private void Move(object sender, MouseEventArgs e)
     {
+        if (readingDrag && readingAnchor >= 0) { PickReadingTo(Position(e)); return; }
         if (!dragging || Document == null) return;
         last = Position(e);
         UpdatePreview();
@@ -265,6 +366,11 @@ internal sealed class EditorSurface : FrameworkElement
     }
     private void Up(object sender, MouseButtonEventArgs e)
     {
+        if (readingDrag)
+        {
+            readingDrag = false; if (IsMouseCaptured) ReleaseMouseCapture();
+            ReadingSelectionChanged?.Invoke(); e.Handled = true; return;
+        }
         if (!dragging || Document == null) return;
         last = Position(e); CompletePendingEdit(); e.Handled = true;
     }
@@ -318,10 +424,11 @@ internal sealed class EditorSurface : FrameworkElement
     }
     private static Rect VisibleBounds(EditOperation operation)
     {
-        if (operation.Kind is EditKind.Line or EditKind.Arrow)
+        if (operation.Kind is EditKind.Line or EditKind.Arrow or EditKind.Measure)
         {
-            // A horizontal or vertical stroke has a one-pixel box; give it a grabbable band.
-            var band = operation.Bounds; band.Inflate(operation.Stroke / 2 + 4, operation.Stroke / 2 + 4); return band;
+            // A horizontal or vertical stroke has a one-pixel box; give it a grabbable band (a dimension also has its ticks and tag).
+            var reach = operation.Kind == EditKind.Measure ? Math.Max(14, operation.Stroke * 2.2 + 10) : operation.Stroke / 2 + 4;
+            var band = operation.Bounds; band.Inflate(reach, reach); return band;
         }
         if (operation.Kind != EditKind.Number) return operation.Bounds;
         var radius = Math.Max(13, operation.Stroke * 3.5);

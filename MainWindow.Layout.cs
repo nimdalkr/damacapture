@@ -64,7 +64,7 @@ internal sealed partial class MainWindow
     private static readonly (string Id, string Label, string Icon, Key Key)[] EditTools =
     {
         ("Select", "선택", "select", Key.V), ("Pen", "펜", "pen", Key.P), ("Highlight", "형광펜", "highlight", Key.H),
-        ("Arrow", "화살표", "arrow", Key.A), ("Line", "직선", "line", Key.L), ("Rectangle", "사각형", "rectangle", Key.R),
+        ("Arrow", "화살표", "arrow", Key.A), ("Measure", "치수", "measure", Key.D), ("Line", "직선", "line", Key.L), ("Rectangle", "사각형", "rectangle", Key.R),
         ("Ellipse", "원", "ellipse", Key.E), ("Text", "텍스트", "text", Key.T), ("Number", "번호", "number", Key.N),
         ("Mosaic", "모자이크", "mosaic", Key.M), ("Blur", "블러", "blur", Key.B), ("Solid", "가리기", "solid", Key.S), ("Crop", "자르기", "crop", Key.C)
     };
@@ -309,6 +309,10 @@ internal sealed partial class MainWindow
         compactLabels.Clear();
         if (share.Content is StackPanel shareRow && shareRow.Children.OfType<TextBlock>().FirstOrDefault() is TextBlock shareLabel) compactLabels.Add(shareLabel);
         UpdateCompactLabels();
+        // Press and drag to hand the result straight to another app.
+        var drag = Ui.IconButton("끌어서 다른 앱에 놓기", "grip", () => Toast("다른 앱으로 끌어다 놓으세요"), compact: true);
+        drag.IsEnabled = document != null; drag.Margin = new Thickness(0, 0, 4, 0); drag.Cursor = Cursors.SizeAll;
+        MakeDragSource(drag, CurrentDragData); exports.Children.Add(drag);
         var save = Ui.CommandButton("저장", "save", Save); Ui.SetGhost(save, false, false); save.IsEnabled = document != null; save.Margin = new Thickness(0, 0, 6, 0); save.ToolTip = "파일로 저장 (Ctrl+S)"; exports.Children.Add(save);
         var copy = Ui.CommandButton("복사", "copy", Copy, true); copy.IsEnabled = document != null; copy.Padding = new Thickness(16, 0, 18, 0); copy.ToolTip = "이미지 복사 (Ctrl+C)"; exports.Children.Add(copy);
         var more = MenuButton("더보기", "more", EditorMenu); more.Margin = new Thickness(6, 0, 0, 0); exports.Children.Add(more);
@@ -338,7 +342,7 @@ internal sealed partial class MainWindow
         AddToolGroup(tools, new[] { "Select" }); tools.Children.Add(Divider());
         AddToolGroup(tools, new[] { "Mosaic", "Blur", "Solid" });
         AddToolGroup(tools, new[] { "Pen", "Highlight" });
-        AddToolGroup(tools, new[] { "Arrow" });
+        AddToolGroup(tools, new[] { "Arrow", "Measure" });
         AddToolGroup(tools, new[] { "Rectangle", "Ellipse", "Line" });
         AddToolGroup(tools, new[] { "Text", "Number" });
         AddToolGroup(tools, new[] { "Crop" });
@@ -356,7 +360,7 @@ internal sealed partial class MainWindow
         canvasScroll = new ScrollViewer { Content = canvasBorder, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Background = Ui.Canvas };
         canvasScroll.SizeChanged += (_, _) => { if (currentPage == "editor" && fitView) Fit(); }; body.Children.Add(canvasScroll);
         // Overlays on the canvas area: QR bubbles beside their codes, the in-place text editor, the detection decision card at the top, transient feedback at the bottom.
-        body.Children.Add(BuildCodeLayer()); body.Children.Add(BuildTextLayer()); body.Children.Add(BuildSensitiveCard()); body.Children.Add(BuildToastHost());
+        body.Children.Add(BuildCodeLayer()); body.Children.Add(BuildTextLayer()); body.Children.Add(BuildSensitiveCard()); body.Children.Add(BuildReadingBar()); body.Children.Add(BuildToastHost());
         canvasScroll.PreviewMouseWheel += (_, e) =>
         {
             if (document == null || Keyboard.Modifiers != ModifierKeys.Control) return;
@@ -510,7 +514,7 @@ internal sealed partial class MainWindow
             b.Width = 26; b.Height = 26; b.MinHeight = 26; b.Padding = new Thickness(3); b.Margin = new Thickness(0, 0, 2, 0);
             b.Background = Brushes.Transparent; b.BorderThickness = new Thickness(1.5);
             var fill = new SolidColorBrush(ink); fill.Freeze();
-            b.Content = new Border { Background = fill, CornerRadius = new CornerRadius(4), BorderBrush = Ui.Brush("#33080809"), BorderThickness = new Thickness(1), Width = 17, Height = 17 };
+            b.Content = new Border { Background = fill, CornerRadius = new CornerRadius(4), BorderBrush = Ui.SwatchEdge, BorderThickness = new Thickness(1), Width = 17, Height = 17 };
             b.ToolTip = name; AutomationProperties.SetName(b, "주석 색상 " + name);
             inkSwatches.Add((b, ink)); return b;
         }

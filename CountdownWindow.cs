@@ -22,7 +22,7 @@ internal sealed class CountdownWindow : Window
         WindowStyle = WindowStyle.None; AllowsTransparency = true; Background = Brushes.Transparent;
         Topmost = true; ShowActivated = false; ShowInTaskbar = false; Focusable = false; IsHitTestVisible = false;
         ResizeMode = ResizeMode.NoResize; SizeToContent = SizeToContent.WidthAndHeight; WindowStartupLocation = WindowStartupLocation.Manual;
-        number = new TextBlock { FontSize = 40, FontWeight = FontWeights.SemiBold, Foreground = Ui.OnPrimary, FontFamily = new FontFamily("Segoe UI, Malgun Gothic"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, RenderTransform = tick, RenderTransformOrigin = new Point(.5, .5) };
+        number = new TextBlock { FontSize = 40, FontWeight = FontWeights.SemiBold, Foreground = Ui.TipText, FontFamily = new FontFamily("Segoe UI, Malgun Gothic"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, RenderTransform = tick, RenderTransformOrigin = new Point(.5, .5) };
         // The ring drains once per second so the remaining time reads without counting.
         ring = new Ring(74) { Thickness = 3.5, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         var layers = new Grid(); layers.Children.Add(ring); layers.Children.Add(number);

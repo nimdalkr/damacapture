@@ -32,6 +32,18 @@ public sealed class AppSettings
     public uint RegionModifiers { get; set; } = DefaultModifiers;
     public uint WindowModifiers { get; set; } = DefaultModifiers;
     public uint ScrollModifiers { get; set; } = DefaultModifiers;
+    public uint LastRegionHotkey { get; set; } = 0x34;
+    public uint LastRegionModifiers { get; set; } = DefaultModifiers;
+    public uint TextHotkey { get; set; } = 0x35;
+    public uint TextModifiers { get; set; } = DefaultModifiers;
+    /// <summary>The last area chosen for a capture as x, y, width, height in physical desktop pixels, so 이전 영역 survives a restart.</summary>
+    public int[] LastRegion { get; set; } = [];
+    /// <summary>While a game, video or slideshow fills the screen, the hotkeys are released to it.</summary>
+    public bool PauseHotkeysInFullScreen { get; set; }
+    /// <summary>Process names whose copies are never added to the clipboard history.</summary>
+    public string[] ClipboardExcludedApps { get; set; } = [];
+    /// <summary>"light", "dark" or "system"; applied at start.</summary>
+    public string Theme { get; set; } = "light";
     /// <summary>File type for captures saved straight to the folder: "png" or "jpg".</summary>
     public string SaveFormat { get; set; } = "png";
     /// <summary>The user's own annotation color as #RRGGBB, or empty.</summary>
@@ -72,6 +84,17 @@ public sealed class AppSettings
         var region = Hotkey(settings.RegionModifiers, settings.RegionHotkey, 0x31);
         var window = Hotkey(settings.WindowModifiers, settings.WindowHotkey, 0x32);
         var scroll = Hotkey(settings.ScrollModifiers, settings.ScrollHotkey, 0x33);
+        // The two hotkeys added in 1.1 give way when an older setup already uses their default for something else.
+        var taken = new System.Collections.Generic.HashSet<(uint, uint)> { region, window, scroll };
+        (uint Modifiers, uint Key) Free((uint Modifiers, uint Key) wanted)
+        {
+            if (taken.Add(wanted)) return wanted;
+            foreach (var key in "4567890ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                if (taken.Add((DefaultModifiers, key))) return (DefaultModifiers, key);
+            return wanted;
+        }
+        var lastRegion = Free(Hotkey(settings.LastRegionModifiers, settings.LastRegionHotkey, 0x34));
+        var text = Free(Hotkey(settings.TextModifiers, settings.TextHotkey, 0x35));
         return new AppSettings
         {
             IncludeCursor = settings.IncludeCursor,
@@ -92,11 +115,20 @@ public sealed class AppSettings
             HistoryRetentionCount = Math.Clamp(settings.HistoryRetentionCount, 0, 100_000),
             RegionHotkey = region.Key, WindowHotkey = window.Key, ScrollHotkey = scroll.Key,
             RegionModifiers = region.Modifiers, WindowModifiers = window.Modifiers, ScrollModifiers = scroll.Modifiers,
+            LastRegionHotkey = lastRegion.Key, LastRegionModifiers = lastRegion.Modifiers, TextHotkey = text.Key, TextModifiers = text.Modifiers,
+            LastRegion = settings.LastRegion is { Length: 4 } area && area[2] >= 2 && area[3] >= 2 ? (int[])area.Clone() : [],
+            PauseHotkeysInFullScreen = settings.PauseHotkeysInFullScreen,
+            ClipboardExcludedApps = (settings.ClipboardExcludedApps ?? []).Select(app => app?.Trim() ?? "").Where(app => app.Length is > 0 and <= 260)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Take(200).ToArray(),
+            Theme = settings.Theme is "dark" or "system" ? settings.Theme : "light",
             HotkeyModifiers = 6,
             SaveFormat = settings.SaveFormat == "jpg" ? "jpg" : "png",
             CustomInk = System.Text.RegularExpressions.Regex.IsMatch(settings.CustomInk ?? "", "^#[0-9A-Fa-f]{6}$") ? settings.CustomInk! : ""
         };
     }
+
+    /// <summary>Whether copies made in this app are kept out of the clipboard history.</summary>
+    public bool ExcludesFromClipboard(string application) => ClipboardExcludedApps.Contains(application, StringComparer.OrdinalIgnoreCase);
 
     private static bool ValidKey(uint key) => key == PrintScreen || key is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5A or >= 0x70 and <= 0x7B;
 }

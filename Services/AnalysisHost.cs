@@ -22,7 +22,7 @@ namespace DamaCapture.Services;
 internal static class AnalysisHost
 {
     public const string Argument = "--analyze";
-    private const int Magic = 0x414D4144, DetectRequest = 1, TextRequest = 2;
+    private const int Magic = 0x414D4144, DetectRequest = 1, TextRequest = 2, ReadRequest = 3;
     private const int SensitiveFlag = 1, CodesFlag = 2;
     private static readonly TimeSpan Limit = TimeSpan.FromSeconds(60);
     /// <summary>Whether the most recent request was answered by the helper rather than in this process.</summary>
@@ -41,6 +41,10 @@ internal static class AnalysisHost
 
     public static Task<TextRecognition.Result> RecognizeAsync(BitmapSource image) =>
         RunAsync(TextRequest, 0, image, ReadText, () => TextRecognition.RecognizeAsync(image));
+
+    /// <summary>Text with where each word sits, so it can be laid over the image and picked out.</summary>
+    public static Task<TextRecognition.Reading> ReadAsync(BitmapSource image) =>
+        RunAsync(ReadRequest, 0, image, ReadReading, () => TextRecognition.ReadAsync(image));
 
     private static async Task<T> RunAsync<T>(int request, int flags, BitmapSource image, Func<JsonElement, T> read, Func<Task<T>> inProcess)
     {
@@ -116,6 +120,11 @@ internal static class AnalysisHost
     private static Rect ReadRect(JsonElement item) =>
         new(item.GetProperty("x").GetDouble(), item.GetProperty("y").GetDouble(), item.GetProperty("w").GetDouble(), item.GetProperty("h").GetDouble());
 
+    private static TextRecognition.Reading ReadReading(JsonElement root) => new(
+        root.GetProperty("lines").EnumerateArray().Select(line => new TextRecognition.Line(line.EnumerateArray()
+            .Select(word => new TextRecognition.Word(word.GetProperty("t").GetString() ?? "", ReadRect(word))).ToArray())).ToArray(),
+        root.GetProperty("lang").GetString() ?? "");
+
     private static TextRecognition.Result ReadText(JsonElement root) => new(root.GetProperty("text").GetString() ?? "",
         root.GetProperty("lang").GetString() ?? "", root.GetProperty("lines").GetInt32(), root.GetProperty("words").GetInt32());
 
@@ -156,6 +165,15 @@ internal static class AnalysisHost
                 ok = true,
                 findings = analysis.Findings.Select(f => new { k = f.Kind.ToString(), x = f.Bounds.X, y = f.Bounds.Y, w = f.Bounds.Width, h = f.Bounds.Height }),
                 codes = analysis.Codes.Select(c => new { t = c.Text, x = c.Bounds.X, y = c.Bounds.Y, w = c.Bounds.Width, h = c.Bounds.Height })
+            });
+        }
+        if (request == ReadRequest)
+        {
+            var reading = await TextRecognition.ReadAsync(image);
+            return JsonSerializer.Serialize(new
+            {
+                ok = true, lang = reading.LanguageTag,
+                lines = reading.Lines.Select(line => line.Words.Select(word => new { t = word.Text, x = word.Bounds.X, y = word.Bounds.Y, w = word.Bounds.Width, h = word.Bounds.Height }))
             });
         }
         if (request == TextRequest)

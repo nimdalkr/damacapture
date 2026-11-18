@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,16 +20,21 @@ public enum CaptureMode { Region, Window, FullScreen, AllScreens, FixedSize, Fre
 /// <summary>All public rectangles are physical desktop pixels, including negative monitor coordinates.</summary>
 public sealed class CaptureService
 {
-    public DrawingRectangle? LastRegion { get; private set; }
+    /// <summary>The area 이전 영역 repeats; the app restores it from the settings after a restart.</summary>
+    public DrawingRectangle? LastRegion { get; set; }
     public DrawingRectangle? SelectedRegion { get; private set; }
     public CaptureContext? LastContext { get; private set; }
+    /// <summary>Parts of the last capture, in its own pixels, where a window asked Windows to keep it out of screenshots.</summary>
+    public IReadOnlyList<DrawingRectangle> LastProtected { get; private set; } = [];
 
     /// <param name="countdown">Called once per remaining second, then with 0 right before the capture so the caller can hide its display.</param>
+    /// <param name="remember">False leaves 이전 영역 as it was, for a capture that only reads text.</param>
     public async Task<BitmapSource?> CaptureAsync(CaptureMode mode, bool includeCursor = false,
-        int delaySeconds = 0, int fixedWidth = 800, int fixedHeight = 600, Func<int, Task>? countdown = null)
+        int delaySeconds = 0, int fixedWidth = 800, int fixedHeight = 600, Func<int, Task>? countdown = null, bool remember = true)
     {
         LastContext = null;
         SelectedRegion = null;
+        LastProtected = [];
         if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
             throw new InvalidOperationException("화면 선택은 앱의 UI 스레드에서 실행해야 합니다.");
         if (delaySeconds > 0)
@@ -51,15 +57,16 @@ public sealed class CaptureService
         };
         if (direct is { Width: > 1, Height: > 1 } region)
         {
-            using var bitmap = CaptureBitmap(region, includeCursor, mode, out var captureContext);
+            using var bitmap = CaptureBitmap(region, includeCursor, mode, out var captureContext, out var blocked);
             var image = ToBitmapSource(bitmap);
             SelectedRegion = region;
             LastContext = captureContext;
+            LastProtected = Within(blocked, region);
             return image;
         }
 
         // Take the image before showing any overlay. The modal selection never appears in the result.
-        using var background = CaptureBitmap(desktop, includeCursor, mode, out var contextAtCapture);
+        using var background = CaptureBitmap(desktop, includeCursor, mode, out var contextAtCapture, out var blockedAtCapture);
         using var overlay = new SelectionOverlay(background, desktop,
             mode == CaptureMode.LastRegion ? CaptureMode.Region : mode,
             Math.Clamp(fixedWidth, 2, desktop.Width), Math.Clamp(fixedHeight, 2, desktop.Height));
@@ -70,9 +77,10 @@ public sealed class CaptureService
         if (clipped.Width < 2 || clipped.Height < 2) return null;
         // Only the selected pixels are copied out of the desktop bitmap.
         var crop = ToBitmapSource(background, new DrawingRectangle(clipped.X - desktop.X, clipped.Y - desktop.Y, clipped.Width, clipped.Height));
+        LastProtected = Within(blockedAtCapture, clipped);
         if (mode != CaptureMode.Freehand || overlay.Polygon.Count < 3)
         {
-            LastRegion = SelectedRegion = clipped;
+            SelectedRegion = clipped; if (remember) LastRegion = clipped;
             LastContext = contextAtCapture;
             return crop;
         }
@@ -97,9 +105,64 @@ public sealed class CaptureService
         var transparent = new RenderTargetBitmap(clipped.Width, clipped.Height, 96, 96, PixelFormats.Pbgra32);
         transparent.Render(visual);
         transparent.Freeze();
-        LastRegion = SelectedRegion = clipped;
+        SelectedRegion = clipped; if (remember) LastRegion = clipped;
         LastContext = contextAtCapture;
         return transparent;
+    }
+
+    /// <summary>Screen rectangles that fall inside a capture, moved into the capture's own pixels.</summary>
+    private static DrawingRectangle[] Within(IReadOnlyList<DrawingRectangle> screen, DrawingRectangle capture) => screen
+        .Select(area => DrawingRectangle.Intersect(area, capture)).Where(area => area.Width > 0 && area.Height > 0)
+        .Select(area => new DrawingRectangle(area.X - capture.X, area.Y - capture.Y, area.Width, area.Height)).ToArray();
+
+    /// <summary>
+    /// Visible parts of windows that asked Windows to keep them out of screenshots (protected viewers, some messengers
+    /// and banking apps). Those parts come out black or missing; telling the user beats leaving them to guess.
+    /// Windows are given top first; anything already covered by a window above does not count.
+    /// </summary>
+    internal static IReadOnlyList<DrawingRectangle> VisibleProtectedAreas(IEnumerable<(DrawingRectangle Bounds, bool Protected)> topFirst, DrawingRectangle capture)
+    {
+        var areas = new List<DrawingRectangle>();
+        using var covered = new Region(DrawingRectangle.Empty);
+        using var identity = new System.Drawing.Drawing2D.Matrix();
+        foreach (var (bounds, isProtected) in topFirst)
+        {
+            var inside = DrawingRectangle.Intersect(bounds, capture);
+            if (inside.Width <= 0 || inside.Height <= 0) continue;
+            if (isProtected)
+            {
+                using var visible = new Region(inside);
+                visible.Exclude(covered);
+                var scans = visible.GetRegionScans(identity);
+                if (scans.Length > 0)
+                {
+                    var box = scans.Select(scan => DrawingRectangle.Round(scan)).Aggregate(DrawingRectangle.Union);
+                    if (box.Width >= 8 && box.Height >= 8) areas.Add(box);
+                }
+            }
+            covered.Union(inside);
+        }
+        return areas;
+    }
+
+    private static IReadOnlyList<DrawingRectangle> ProtectedAreas(DrawingRectangle capture)
+    {
+        var windows = new List<(DrawingRectangle, bool)>();
+        try
+        {
+            NativeMethods.EnumWindows((hwnd, _) =>
+            {
+                if (!NativeMethods.IsWindowVisible(hwnd)) return true;
+                if (NativeMethods.GetCloaked(hwnd, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0) return true;
+                if (NativeMethods.GetFrameBounds(hwnd, 9, out var frame, Marshal.SizeOf<NativeMethods.RECT>()) != 0 && !NativeMethods.GetWindowRect(hwnd, out frame)) return true;
+                var bounds = frame.Rectangle;
+                if (bounds.Width < 2 || bounds.Height < 2) return true;
+                windows.Add((bounds, NativeMethods.GetWindowDisplayAffinity(hwnd, out var affinity) && affinity != 0));
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException) { return []; }
+        return windows.Any(window => window.Item2) ? VisibleProtectedAreas(windows, capture) : [];
     }
 
     public static DrawingRectangle VirtualBounds() => Forms.Screen.AllScreens
@@ -126,11 +189,15 @@ public sealed class CaptureService
             0x0002, 200, out _) != IntPtr.Zero;
     }
 
-    private static Bitmap CaptureBitmap(DrawingRectangle bounds, bool includeCursor, CaptureMode? mode, out CaptureContext? context)
+    private static Bitmap CaptureBitmap(DrawingRectangle bounds, bool includeCursor, CaptureMode? mode, out CaptureContext? context) =>
+        CaptureBitmap(bounds, includeCursor, mode, out context, out _, readProtected: false);
+
+    private static Bitmap CaptureBitmap(DrawingRectangle bounds, bool includeCursor, CaptureMode? mode, out CaptureContext? context, out IReadOnlyList<DrawingRectangle> blocked, bool readProtected = true)
     {
         // Hide/Show operations are asynchronous to the compositor. Flush before freezing the desktop.
         NativeMethods.DwmFlush();
         context = null;
+        blocked = [];
         var bitmap = new Bitmap(bounds.Width, bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         try
         {
@@ -139,6 +206,8 @@ public sealed class CaptureService
                 // Collect after the optional delay and before the selection overlay changes foreground focus.
                 if (mode is { } captureMode) context = CaptureContext.ReadForeground(captureMode);
                 graphics.CopyFromScreen(bounds.Location, DrawingPoint.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
+                // Read right after the pixels, so the hotkey-to-freeze time does not grow.
+                if (readProtected) blocked = ProtectedAreas(bounds);
                 if (includeCursor) DrawCursor(graphics, bounds);
             }
             // GDI screen capture does not promise an alpha channel. Make the frozen desktop opaque.
